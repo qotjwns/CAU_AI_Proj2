@@ -1,0 +1,56 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== Virtual environments =====
+.venv/
+venv/
+env/
+.python-version
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== Data (large; download separately) =====
+data/
+
+# ===== Experiment outputs (regenerable) =====
+outputs/*/*
+!outputs/*/.gitkeep
+
+# ===== Model weights / caches =====
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+.cache/
+hf_cache/
+
+# ===== Experiment tracking =====
+wandb/
+mlruns/
+
+# ===== Secrets =====
+.env
+.env.*
+
+# ===== OS / Editor =====
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ===== Claude Code (personal settings) =====
+.claude/settings.local.json
