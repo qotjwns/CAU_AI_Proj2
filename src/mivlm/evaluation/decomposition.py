@@ -53,6 +53,17 @@ def combine_per_image(cases: list[dict], c_rows: list[dict]) -> list[dict]:
     return [_combine(case, [by_slot[(case["case_id"], slot)] for slot in (1, 2, 3)]) for case in cases]
 
 
+def images_all_correct(row: dict) -> bool:
+    """합친 행의 이미지별 답 3개가 모두 맞았는지
+
+    변형 이름의 글자가 자리별 정답이다: P 자리는 Yes, N 자리는 No가 맞다.
+    AND로 합친 답이 맞아도 이 값은 False일 수 있다.
+    예: PPN에서 [No, Yes, No]는 AND가 No로 정답이지만 자리 1의 P를 놓쳤다.
+    """
+    expected = ["Yes" if letter == "P" else "No" for letter in row["variant"]]
+    return row["image_predictions"] == expected
+
+
 def load_single_image_rows(run_dir: Path) -> list[dict]:
     """B 실행 폴더의 결과를 이미지 1장 항목(320개)과 합친 행으로 읽는다. 전체 실행 결과용"""
     return join_results(single_image_items(load_pools()), read_results(run_dir), "item_id")

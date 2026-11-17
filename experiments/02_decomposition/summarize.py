@@ -11,7 +11,9 @@ from collections import Counter
 
 from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
 from mivlm.data.cases import load_cases
-from mivlm.evaluation.decomposition import combine_per_image, combine_single_image, load_per_image_rows, load_single_image_rows
+from mivlm.evaluation.decomposition import (
+    combine_per_image, combine_single_image, images_all_correct, load_per_image_rows, load_single_image_rows,
+)
 from mivlm.evaluation.metrics import VARIANT_ORDER, load_rows, summarize, summarize_by
 from mivlm.evaluation.report import format_value, print_table
 
@@ -100,8 +102,22 @@ def main() -> None:
         image_tables[f"C 자리 {slot}"] = summarize([row for row in c_image_rows if row["slot"] == slot])
     print_table("5. 이미지별 판단", image_tables)
 
-    # 6. B: 클래스별 이미지 1장 판단 (클래스마다 P 8장, N 8장)
-    print_table("6. B의 클래스별 이미지 1장 판단", summarize_by(b_image_rows, "object"))
+    # 6. AND가 가리는 오류: 케이스의 답은 맞았지만 이미지별 답은 틀린 경우를 드러낸다
+    #    N이 1장인 케이스는 N 자리만 No라고 하면 AND가 No로 정답이 되므로, P 자리를 No라고 틀려도 가려진다
+    hidden_table = {}
+    for name, rows in [("B (1장씩 AND)", b_rows), ("C (자리별 AND)", c_rows)]:
+        one_n = [row for row in rows if row["variant"] in ONE_N_VARIANTS]
+        one_n_correct = [row for row in one_n if row["prediction"] == "No"]
+        hidden_table[name] = [
+            percent(sum(images_all_correct(row) for row in rows), len(rows)),
+            f"{len(one_n_correct)} / {len(one_n)}",
+            percent(sum(images_all_correct(row) for row in one_n_correct), len(one_n_correct)),
+        ]
+    print_columns("6. AND가 가리는 오류",
+                  ["세 이미지 답이 모두 맞은 케이스", "N 1장 케이스 중 No로 맞힌 수", "  그중 세 이미지 답이 모두 맞음"], hidden_table)
+
+    # 7. B: 클래스별 이미지 1장 판단 (클래스마다 P 8장, N 8장)
+    print_table("7. B의 클래스별 이미지 1장 판단", summarize_by(b_image_rows, "object"))
 
 
 if __name__ == "__main__":

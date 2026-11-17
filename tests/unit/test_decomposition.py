@@ -2,7 +2,7 @@
 src/mivlm/evaluation/decomposition.py 단위 테스트
 pytest tests/unit/test_decomposition.py -v
 """
-from mivlm.evaluation.decomposition import and_answers, combine_per_image, combine_single_image
+from mivlm.evaluation.decomposition import and_answers, combine_per_image, combine_single_image, images_all_correct
 
 DOG, CAT = 18, 17
 # PPN 케이스: 자리 1, 2는 P(이미지 11, 12), 자리 3은 N(이미지 21)
@@ -87,3 +87,28 @@ def test_combine_per_image_orders_by_slot():
     assert row["image_predictions"] == ["Yes", "No", "No"]
     assert row["prediction"] == "No"
     assert row["logit_margin"] == -1.5
+
+
+# ---------------------------------------------------------- images_all_correct
+
+
+def test_images_all_correct_when_each_slot_matches_the_variant():
+    assert images_all_correct({"variant": "PPN", "image_predictions": ["Yes", "Yes", "No"]})
+    assert images_all_correct({"variant": "NNN", "image_predictions": ["No", "No", "No"]})
+
+
+def test_and_can_be_right_while_an_image_answer_is_wrong():
+    # PPN: N 자리를 No라고 했으므로 AND는 정답(No)이지만, 자리 1의 P를 No라고 놓쳤다
+    row = {"variant": "PPN", "image_predictions": ["No", "Yes", "No"]}
+
+    assert and_answers(row["image_predictions"]) == "No"
+    assert not images_all_correct(row)
+
+
+def test_images_all_correct_compares_by_slot_not_by_count():
+    # Yes 2개, No 1개로 개수는 PNP와 같지만 자리가 다르다
+    assert not images_all_correct({"variant": "PNP", "image_predictions": ["Yes", "Yes", "No"]})
+
+
+def test_images_all_correct_is_false_with_an_unparsed_answer():
+    assert not images_all_correct({"variant": "PPP", "image_predictions": ["Yes", None, "Yes"]})
