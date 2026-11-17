@@ -19,7 +19,7 @@ import torch
 from huggingface_hub import try_to_load_from_cache
 from tqdm import tqdm
 
-from mivlm.config import CASES_JSONL, PROJECT_ROOT, load_models_config
+from mivlm.config import CASES_JSONL, PREDICTIONS_DIR, PROJECT_ROOT, load_models_config
 from mivlm.data.cases import load_cases, pilot_cases
 from mivlm.models.inference import GENERATION_KWARGS, QUESTION, case_messages, infer
 from mivlm.models.loading import load_model
@@ -52,7 +52,7 @@ def main() -> None:
         cases = pilot_cases(cases)
     # 결과 폴더 이름: <모델>[_float32][_pilot]
     run_name = args.model + (f"_{args.dtype}" if args.dtype else "") + ("_pilot" if args.pilot else "")
-    run_dir = PROJECT_ROOT / "outputs" / "predictions" / EXPERIMENT / run_name
+    run_dir = PREDICTIONS_DIR / EXPERIMENT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     repo_id = models[args.model]

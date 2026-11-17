@@ -17,6 +17,8 @@ POOLS_JSON = CASES_DIR / "pools.json"
 PAIRS_JSON = CASES_DIR / "pairs.json"
 CASES_JSONL = CASES_DIR / "cases.jsonl"
 
+PREDICTIONS_DIR = PROJECT_ROOT / "outputs" / "predictions"  # <실험>/<실행 이름>/{meta.json, results.jsonl}
+
 
 def load_models_config() -> dict[str, str]:
     """configs/models.yaml의 모델 목록: {이름: Hugging Face repo id}"""
