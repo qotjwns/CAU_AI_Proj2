@@ -5,16 +5,13 @@ python scripts/download_model.py qwen2.5-vl-3b
 """
 import argparse
 from pathlib import Path
-
-import yaml
 from huggingface_hub import snapshot_download
 
-MODELS_YAML = Path(__file__).resolve().parents[1] / "configs" / "models.yaml"
+from mivlm.config import load_models_config
 
 
 def main() -> None:
-    with open(MODELS_YAML) as f:
-        models = yaml.safe_load(f)["models"]
+    models = load_models_config()
 
     parser = argparse.ArgumentParser(description="configs/models.yaml안에 있는 모델을 다운로드")
     parser.add_argument("name", choices=list(models))
