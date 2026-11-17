@@ -3,7 +3,7 @@ src/mivlm/models/inference.py 단위 테스트 (모델은 로딩하지 않는다
 pytest tests/unit/test_inference.py -v
 """
 from mivlm.data.image import image_path
-from mivlm.models.inference import build_messages, parse_yes_no
+from mivlm.models.inference import build_messages, case_messages, parse_yes_no
 
 # ---------------------------------------------------------------- parse_yes_no
 
@@ -50,3 +50,17 @@ def test_images_keep_order_as_absolute_path_strings():
     assert content[0]["image"] == str(image_path(285))
     assert content[1]["image"] == str(image_path(139))
     assert content[0]["image"].startswith("/")
+
+
+# --------------------------------------------------------------- case_messages
+
+
+def test_case_becomes_three_images_then_question():
+    case = {"case_id": "group_01_dining_table_1_PNN", "object": "dining table", "image_ids": [11, 22, 21]}
+
+    content = case_messages(case)[0]["content"]
+
+    assert [part.get("image") for part in content[:3]] == [str(image_path(i)) for i in [11, 22, 21]]
+    assert content[3]["text"] == (
+        "Is the object category 'dining table' present in all 3 images? Please answer with Yes or No."
+    )

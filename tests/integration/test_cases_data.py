@@ -10,6 +10,7 @@ from collections import Counter
 import pytest
 
 from mivlm.config import CASES_JSONL, PAIRS_JSON, POOLS_JSON
+from mivlm.data.cases import load_cases
 
 pytestmark = pytest.mark.skipif(
     not (POOLS_JSON.exists() and PAIRS_JSON.exists() and CASES_JSONL.exists()),
@@ -33,8 +34,7 @@ def pairs():
 
 @pytest.fixture(scope="module")
 def cases():
-    with open(CASES_JSONL) as f:
-        return [json.loads(line) for line in f]
+    return load_cases()
 
 
 def test_variant_letters_match_pool_membership(pools, cases):

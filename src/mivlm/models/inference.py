@@ -3,6 +3,8 @@
 """
 from mivlm.data.image import image_path
 
+QUESTION = "Is the object category '{object}' present in all 3 images? Please answer with Yes or No."
+
 
 def build_messages(image_ids: list[int], question: str) -> list[dict]:
     """user 턴 하나를 만든다: 이미지들 먼저, 질문 마지막
@@ -13,6 +15,11 @@ def build_messages(image_ids: list[int], question: str) -> list[dict]:
     content = [{"type": "image", "image": str(image_path(image_id))} for image_id in image_ids]
     content.append({"type": "text", "text": question})
     return [{"role": "user", "content": content}]
+
+
+def case_messages(case: dict) -> list[dict]:
+    """cases.jsonl의 케이스 하나를 메시지로 만든다: 이미지 3장(image_ids 순서 그대로) → 질문"""
+    return build_messages(case["image_ids"], QUESTION.format(object=case["object"]))
 
 
 def parse_yes_no(text: str) -> str | None:
