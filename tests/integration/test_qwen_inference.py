@@ -7,12 +7,11 @@ from huggingface_hub import try_to_load_from_cache
 
 from mivlm.config import load_models_config
 from mivlm.data.image import image_path
-from mivlm.models.inference import build_messages, infer
+from mivlm.models.inference import SINGLE_IMAGE_QUESTION, build_messages, infer
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
 CAT_IMAGE_ID = 39769  # 고양이 두 마리가 소파에 누워 있는 640x480 사진
-QUESTION = "Is the object category '{object}' present in the image? Please answer with Yes or No."
 
 pytestmark = pytest.mark.skipif(
     not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
@@ -28,7 +27,7 @@ def loaded():
 
 def _ask(loaded, object_name):
     model, processor = loaded
-    result = infer(model, processor, build_messages([CAT_IMAGE_ID], QUESTION.format(object=object_name)))
+    result = infer(model, processor, build_messages([CAT_IMAGE_ID], SINGLE_IMAGE_QUESTION.format(object=object_name)))
     print(f"\n{object_name}: {result}")
     return result
 
@@ -61,7 +60,7 @@ def test_token_counts(loaded, cat_result):
     # 이미지: 640x480 → 644x476 → 14px 패치 격자 34x46 = 1564개 → 2x2로 합쳐 토큰 391개
     # 그 외: system 블록 11 + user 머리 3 + vision 시작/끝 2 + 턴 끝 2 + assistant 머리 3 = 21, 여기에 질문 토큰
     _, processor = loaded
-    question_tokens = len(processor.tokenizer.encode(QUESTION.format(object="cat"), add_special_tokens=False))
+    question_tokens = len(processor.tokenizer.encode(SINGLE_IMAGE_QUESTION.format(object="cat"), add_special_tokens=False))
 
     assert cat_result["image_token_count"] == 391
     assert cat_result["input_token_count"] == 391 + 21 + question_tokens

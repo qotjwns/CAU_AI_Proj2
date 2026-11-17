@@ -8,7 +8,7 @@ python experiments/01_baseline/run.py --dtype float32     # float32로 실행, b
 중간에 끊기면 같은 명령으로 다시 실행한다. 이미 끝난 케이스는 건너뛴다.
 """
 from mivlm.data.cases import load_cases, pilot_cases
-from mivlm.models.inference import QUESTION, case_messages
+from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages
 from mivlm.runner import parse_run_args, run_inference
 
 
@@ -17,7 +17,7 @@ def main() -> None:
     cases = load_cases()
     if args.pilot:
         cases = pilot_cases(cases)
-    run_inference("01_baseline", args, cases, "case_id", case_messages, QUESTION)
+    run_inference("01_baseline", args, cases, "case_id", case_messages, ALL_IMAGES_QUESTION)
 
 
 if __name__ == "__main__":

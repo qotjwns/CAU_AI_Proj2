@@ -3,8 +3,12 @@
 """
 from mivlm.data.image import image_path
 
-QUESTION = "Is the object category '{object}' present in all 3 images? Please answer with Yes or No."
-# 이미지 3장 중 한 자리를 지목해서 묻는 질문 (분해 실험 C)
+# 질문 문구는 실험의 핵심 조건이다. 바꾸면 이미 받은 결과와 다른 실험이 된다
+# A: 이미지 3장을 넣고 3장 모두에 있는지 묻는다
+ALL_IMAGES_QUESTION = "Is the object category '{object}' present in all 3 images? Please answer with Yes or No."
+# B: 이미지 1장만 넣고 묻는다
+SINGLE_IMAGE_QUESTION = "Is the object category '{object}' present in this image? Please answer with Yes or No."
+# C: 이미지 3장을 넣고 그중 한 자리를 지목해서 묻는다
 PER_IMAGE_QUESTION = "Is the object category '{object}' present in the {ordinal} image? Please answer with Yes or No."
 ORDINALS = ["first", "second", "third"]
 GENERATION_KWARGS = {"do_sample": False, "num_beams": 1, "max_new_tokens": 8}
@@ -23,7 +27,12 @@ def build_messages(image_ids: list[int], question: str) -> list[dict]:
 
 def case_messages(case: dict) -> list[dict]:
     """cases.jsonl의 케이스 하나를 메시지로 만든다: 이미지 3장(image_ids 순서 그대로) → 질문"""
-    return build_messages(case["image_ids"], QUESTION.format(object=case["object"]))
+    return build_messages(case["image_ids"], ALL_IMAGES_QUESTION.format(object=case["object"]))
+
+
+def single_image_messages(item: dict) -> list[dict]:
+    """이미지 1장만 넣고 그 이미지에 대해 묻는 메시지 (분해 실험 B)"""
+    return build_messages([item["image_id"]], SINGLE_IMAGE_QUESTION.format(object=item["object"]))
 
 
 def per_image_messages(query: dict) -> list[dict]:

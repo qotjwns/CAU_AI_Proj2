@@ -3,7 +3,7 @@ src/mivlm/models/inference.py 단위 테스트 (모델은 로딩하지 않는다
 pytest tests/unit/test_inference.py -v
 """
 from mivlm.data.image import image_path
-from mivlm.models.inference import build_messages, case_messages, parse_yes_no, per_image_messages
+from mivlm.models.inference import build_messages, case_messages, parse_yes_no, per_image_messages, single_image_messages
 
 # ---------------------------------------------------------------- parse_yes_no
 
@@ -85,3 +85,14 @@ def test_per_image_question_ordinals():
              for slot in [1, 2, 3]]
 
     assert ["first" in texts[0], "second" in texts[1], "third" in texts[2]] == [True, True, True]
+
+
+# ------------------------------------------------------- single_image_messages
+
+
+def test_single_image_message_has_one_image_and_the_b_question():
+    content = single_image_messages({"object": "dining table", "image_id": 139})[0]["content"]
+
+    assert [part["type"] for part in content] == ["image", "text"]
+    assert content[0]["image"] == str(image_path(139))
+    assert content[1]["text"] == "Is the object category 'dining table' present in this image? Please answer with Yes or No."

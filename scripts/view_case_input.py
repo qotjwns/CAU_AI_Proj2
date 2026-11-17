@@ -12,7 +12,7 @@ from matplotlib.patches import Rectangle
 from mivlm.config import INSTANCES_JSON, PROJECT_ROOT
 from mivlm.data.cases import load_cases
 from mivlm.data.image import image_path
-from mivlm.models.inference import QUESTION, case_messages, infer
+from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages, infer
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
@@ -87,7 +87,7 @@ def main() -> None:
         f"answer: {result['raw_response']!r}   yes {result['yes_logit']:.3f} / no {result['no_logit']:.3f}   "
         f"margin {result['logit_margin']:+.3f}   input tokens {result['input_token_count']}"
     )
-    fig.text(0.5, 0.02, QUESTION.format(object=case["object"]), ha="center")
+    fig.text(0.5, 0.02, ALL_IMAGES_QUESTION.format(object=case["object"]), ha="center")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUT_DIR / f"{case['case_id']}.png"
