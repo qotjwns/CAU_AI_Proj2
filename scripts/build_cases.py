@@ -4,10 +4,8 @@ python scripts/build_cases.py
 """
 import json
 
-from build_pairs import PAIRS_JSON
-from build_pools import PROJECT_ROOT
+from mivlm.config import CASES_JSONL, PAIRS_JSON
 
-CASES_JSONL = PROJECT_ROOT / "data" / "cases" / "cases.jsonl"
 VARIANTS = {
     "PPP": [("p", 0), ("p", 1), ("p", 2)],
     "PPN": [("p", 0), ("p", 1), ("n", 0)],

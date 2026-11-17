@@ -7,9 +7,9 @@ import json
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from build_pools import INSTANCES_JSON, POOLS_JSON, PROJECT_ROOT
+from mivlm.config import INSTANCES_JSON, POOLS_JSON, PROJECT_ROOT
+from mivlm.data.image import image_path
 
-IMAGE_DIR = PROJECT_ROOT / "data" / "coco" / "val2017"
 OUT_DIR = PROJECT_ROOT / "outputs" / "figures" / "pools"
 
 
@@ -31,7 +31,7 @@ def main() -> None:
             for col, image_id in enumerate(pool[key]):
                 ax = axes[row, col]
                 # 흑백 이미지는 2차원 배열이라 cmap을 지정하지 않으면 컬러맵이 입혀진다
-                ax.imshow(plt.imread(IMAGE_DIR / f"{image_id:012d}.jpg"), cmap="gray")
+                ax.imshow(plt.imread(image_path(image_id)), cmap="gray")
                 # 해당 클래스 bbox 전부: 빨강 = 일반(면적 %), 노랑 = crowd (P 판정에서 제외됨)
                 for (x, y, w, h), iscrowd in boxes.get((image_id, pool["category_id"]), []):
                     color = "yellow" if iscrowd else "red"

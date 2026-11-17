@@ -4,9 +4,7 @@ COCO val2017 이미지 경로
 """
 from pathlib import Path
 
-from mivlm.config import PROJECT_ROOT
-
-COCO_IMAGE_DIR = PROJECT_ROOT / "data" / "coco" / "val2017"
+from mivlm.config import COCO_IMAGE_DIR
 
 
 def image_path(image_id: int) -> Path:

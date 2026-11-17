@@ -4,11 +4,9 @@ python scripts/build_pools.py
 """
 import json
 import random
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-INSTANCES_JSON = PROJECT_ROOT / "data" / "coco" / "annotations" / "instances_valrem.json"
-POOLS_JSON = PROJECT_ROOT / "data" / "cases" / "pools.json"
+from mivlm.config import INSTANCES_JSON, POOLS_JSON
+
 MIN_AREA_RATIO = 0.05
 N_CLASSES = 20
 POOL_SIZE = 8

@@ -7,14 +7,14 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from mivlm.config import COCO_IMAGE_DIR, COCO_ROOT, INSTANCES_JSON
+
 IMAGES_ZIP_URL = "http://images.cocodataset.org/zips/val2017.zip"
 IMAGES_ZIP_BYTES = 815_585_330
 ANNOTATIONS_ZIP_URL = "https://huggingface.co/datasets/kdexd/coco-rem/resolve/main/instances_valrem.json.zip"
 ANNOTATIONS_ZIP_BYTES = 10_410_664
-INSTANCES_JSON = "instances_valrem.json"
 N_VAL_IMAGES = 5000
 CHUNK_SIZE = 1 << 20  # 1 MB
-COCO_ROOT = Path(__file__).resolve().parents[1] / "data" / "coco"
 
 
 def count_images(image_dir: Path) -> int:
@@ -58,14 +58,11 @@ def download(url: str, dest: Path, expected_size: int) -> None:
 
 
 def main() -> None:
-    image_dir = COCO_ROOT / "val2017"
-    annotations_dir = COCO_ROOT / "annotations"
-    instances_json_path = annotations_dir / INSTANCES_JSON
     zips_dir = COCO_ROOT / "zips"
     images_zip = zips_dir / "val2017.zip"
     annotations_zip = zips_dir / "instances_valrem.json.zip"
 
-    if count_images(image_dir) == N_VAL_IMAGES and instances_json_path.exists():
+    if count_images(COCO_IMAGE_DIR) == N_VAL_IMAGES and INSTANCES_JSON.exists():
         print(f"[skip] COCO val2017 already prepared at {COCO_ROOT}")
     else:
         zips_dir.mkdir(parents=True, exist_ok=True)
@@ -75,17 +72,17 @@ def main() -> None:
         print("[extract] val2017.zip")
         with zipfile.ZipFile(images_zip) as zf:
             zf.extractall(COCO_ROOT)
-        print(f"[extract] {INSTANCES_JSON}")
+        print(f"[extract] {INSTANCES_JSON.name}")
 
         with zipfile.ZipFile(annotations_zip) as zf:
-            zf.extractall(annotations_dir, members=[INSTANCES_JSON])
+            zf.extractall(INSTANCES_JSON.parent, members=[INSTANCES_JSON.name])
 
-    n_images = count_images(image_dir)
+    n_images = count_images(COCO_IMAGE_DIR)
     if n_images != N_VAL_IMAGES:
-        raise RuntimeError(f"expected {N_VAL_IMAGES} images in {image_dir}, found {n_images}")
+        raise RuntimeError(f"expected {N_VAL_IMAGES} images in {COCO_IMAGE_DIR}, found {n_images}")
 
     print(f"[ok] images on disk: {n_images}")
-    for key, value in summarize_annotations(instances_json_path).items():
+    for key, value in summarize_annotations(INSTANCES_JSON).items():
         print(f"[ok] {key}: {value}")
 
 

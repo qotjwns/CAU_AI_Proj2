@@ -9,9 +9,7 @@ from collections import Counter
 
 import pytest
 
-from build_cases import CASES_JSONL
-from build_pairs import PAIRS_JSON
-from build_pools import POOLS_JSON
+from mivlm.config import CASES_JSONL, PAIRS_JSON, POOLS_JSON
 
 pytestmark = pytest.mark.skipif(
     not (POOLS_JSON.exists() and PAIRS_JSON.exists() and CASES_JSONL.exists()),

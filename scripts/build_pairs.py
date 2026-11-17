@@ -6,9 +6,9 @@ import itertools
 import json
 import random
 
-from build_pools import POOLS_JSON, PROJECT_ROOT, SEED
+from build_pools import SEED
+from mivlm.config import PAIRS_JSON, POOLS_JSON
 
-PAIRS_JSON = PROJECT_ROOT / "data" / "cases" / "pairs.json"
 GROUP_PATTERNS = [(0, 1, 2, 3), (4, 5, 6, 7), (0, 2, 4, 6), (1, 3, 5, 7), (0, 3, 4, 7)]
 PAIR_SIZE = 3
 
