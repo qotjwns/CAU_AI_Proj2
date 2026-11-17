@@ -1,4 +1,4 @@
-"""coco val 2017 이미지, annotation 다운로드"""
+"""COCO val2017 이미지와 COCO-ReM annotation 다운로드"""
 import json
 import urllib.request
 import zipfile
@@ -6,9 +6,9 @@ from pathlib import Path
 
 IMAGES_ZIP_URL = "http://images.cocodataset.org/zips/val2017.zip"
 IMAGES_ZIP_BYTES = 815_585_330
-ANNOTATIONS_ZIP_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
-ANNOTATIONS_ZIP_BYTES = 252_907_541
-INSTANCES_JSON = "annotations/instances_val2017.json"
+ANNOTATIONS_ZIP_URL = "https://huggingface.co/datasets/kdexd/coco-rem/resolve/main/instances_valrem.json.zip"
+ANNOTATIONS_ZIP_BYTES = 10_410_664
+INSTANCES_JSON = "instances_valrem.json"
 N_VAL_IMAGES = 5000
 CHUNK_SIZE = 1 << 20  # 1 MB
 COCO_ROOT = Path(__file__).resolve().parents[1] / "data" / "coco"
@@ -56,10 +56,11 @@ def download(url: str, dest: Path, expected_size: int) -> None:
 
 def main() -> None:
     image_dir = COCO_ROOT / "val2017"
-    instances_json_path = COCO_ROOT / INSTANCES_JSON
+    annotations_dir = COCO_ROOT / "annotations"
+    instances_json_path = annotations_dir / INSTANCES_JSON
     zips_dir = COCO_ROOT / "zips"
     images_zip = zips_dir / "val2017.zip"
-    annotations_zip = zips_dir / "annotations_trainval2017.zip"
+    annotations_zip = zips_dir / "instances_valrem.json.zip"
 
     if count_images(image_dir) == N_VAL_IMAGES and instances_json_path.exists():
         print(f"[skip] COCO val2017 already prepared at {COCO_ROOT}")
@@ -72,8 +73,9 @@ def main() -> None:
         with zipfile.ZipFile(images_zip) as zf:
             zf.extractall(COCO_ROOT)
         print(f"[extract] {INSTANCES_JSON}")
+        
         with zipfile.ZipFile(annotations_zip) as zf:
-            zf.extractall(COCO_ROOT, members=[INSTANCES_JSON])
+            zf.extractall(annotations_dir, members=[INSTANCES_JSON])
 
     n_images = count_images(image_dir)
     if n_images != N_VAL_IMAGES:
