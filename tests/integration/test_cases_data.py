@@ -10,7 +10,7 @@ from collections import Counter
 import pytest
 
 from mivlm.config import CASES_JSONL, PAIRS_JSON, POOLS_JSON
-from mivlm.data.cases import load_cases, load_pools, pilot_cases, single_image_items
+from mivlm.data.cases import load_cases, load_pools, per_image_queries, pilot_cases, single_image_items
 
 pytestmark = pytest.mark.skipif(
     not (POOLS_JSON.exists() and PAIRS_JSON.exists() and CASES_JSONL.exists()),
@@ -107,3 +107,13 @@ def test_single_image_items_cover_every_pool_image():
     assert len(pilot) == 40
     assert len({item["object"] for item in pilot}) == 20
     assert sum(item["label"] == "Yes" for item in pilot) == 20
+
+
+def test_per_image_queries_cover_every_case_slot(cases):
+    queries = per_image_queries(cases)
+
+    assert len(queries) == 7200
+    assert len({query["query_id"] for query in queries}) == 7200
+    # pair마다 P 자리는 PPP 3 + PPN 2 + PNN 1 + NNN 0 + NPP 2 + PNP 2 = 10개, N 자리는 8개
+    assert sum(query["label"] == "Yes" for query in queries) == 4000
+    assert sum(query["label"] == "No" for query in queries) == 3200

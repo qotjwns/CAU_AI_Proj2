@@ -4,6 +4,9 @@
 from mivlm.data.image import image_path
 
 QUESTION = "Is the object category '{object}' present in all 3 images? Please answer with Yes or No."
+# 이미지 3장 중 한 자리를 지목해서 묻는 질문 (분해 실험 C)
+PER_IMAGE_QUESTION = "Is the object category '{object}' present in the {ordinal} image? Please answer with Yes or No."
+ORDINALS = ["first", "second", "third"]
 GENERATION_KWARGS = {"do_sample": False, "num_beams": 1, "max_new_tokens": 8}
 
 
@@ -21,6 +24,12 @@ def build_messages(image_ids: list[int], question: str) -> list[dict]:
 def case_messages(case: dict) -> list[dict]:
     """cases.jsonl의 케이스 하나를 메시지로 만든다: 이미지 3장(image_ids 순서 그대로) → 질문"""
     return build_messages(case["image_ids"], QUESTION.format(object=case["object"]))
+
+
+def per_image_messages(query: dict) -> list[dict]:
+    """이미지 3장을 그대로 넣고, 그중 한 자리(query["slot"], 1부터 셈)의 이미지에 대해 묻는 메시지"""
+    question = PER_IMAGE_QUESTION.format(object=query["object"], ordinal=ORDINALS[query["slot"] - 1])
+    return build_messages(query["image_ids"], question)
 
 
 def parse_yes_no(text: str) -> str | None:

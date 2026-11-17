@@ -49,3 +49,23 @@ def pilot_cases(cases: list[dict]) -> list[dict]:
         if case["group_id"].startswith("group_01_") and case["pair_id"] == 1:
             first_pairs.setdefault(case["object"], []).append(case)
     return [variants[i % len(variants)] for i, variants in enumerate(first_pairs.values())]
+
+
+def per_image_queries(cases: list[dict]) -> list[dict]:
+    """이미지 3장을 넣고 한 자리를 지목해 묻는 항목: 케이스마다 자리 1, 2, 3에 대해 하나씩
+
+    label은 "지목한 자리의 이미지에 객체가 있는가"의 정답이다. 그 자리가 P면 Yes, N이면 No.
+    """
+    queries = []
+    for case in cases:
+        for slot, letter in enumerate(case["variant"], start=1):
+            queries.append({
+                "query_id": f"{case['case_id']}_{slot}",
+                "case_id": case["case_id"],
+                "slot": slot,
+                "image_ids": case["image_ids"],
+                "object": case["object"],
+                "variant": case["variant"],
+                "label": "Yes" if letter == "P" else "No",
+            })
+    return queries

@@ -3,7 +3,7 @@ src/mivlm/models/inference.py 단위 테스트 (모델은 로딩하지 않는다
 pytest tests/unit/test_inference.py -v
 """
 from mivlm.data.image import image_path
-from mivlm.models.inference import build_messages, case_messages, parse_yes_no
+from mivlm.models.inference import build_messages, case_messages, parse_yes_no, per_image_messages
 
 # ---------------------------------------------------------------- parse_yes_no
 
@@ -64,3 +64,24 @@ def test_case_becomes_three_images_then_question():
     assert content[3]["text"] == (
         "Is the object category 'dining table' present in all 3 images? Please answer with Yes or No."
     )
+
+
+# ---------------------------------------------------------- per_image_messages
+
+
+def test_per_image_question_names_the_slot():
+    query = {"object": "dining table", "slot": 2, "image_ids": [11, 21, 13]}
+
+    content = per_image_messages(query)[0]["content"]
+
+    assert [part.get("image") for part in content[:3]] == [str(image_path(i)) for i in [11, 21, 13]]
+    assert content[3]["text"] == (
+        "Is the object category 'dining table' present in the second image? Please answer with Yes or No."
+    )
+
+
+def test_per_image_question_ordinals():
+    texts = [per_image_messages({"object": "dog", "slot": slot, "image_ids": [1, 2, 3]})[0]["content"][3]["text"]
+             for slot in [1, 2, 3]]
+
+    assert ["first" in texts[0], "second" in texts[1], "third" in texts[2]] == [True, True, True]

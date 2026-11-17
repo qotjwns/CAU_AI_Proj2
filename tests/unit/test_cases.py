@@ -2,7 +2,7 @@
 src/mivlm/data/cases.py 단위 테스트
 pytest tests/unit/test_cases.py -v
 """
-from mivlm.data.cases import pilot_cases, single_image_items
+from mivlm.data.cases import per_image_queries, pilot_cases, single_image_items
 
 VARIANTS = ["PPP", "PPN", "PNN", "NNN", "NPP", "PNP"]
 CLASSES = ["person", "dining table", "chair", "couch", "cat", "train", "bus"]
@@ -54,3 +54,19 @@ def test_single_image_items_positives_then_negatives_per_class():
     assert [item["item_id"] for item in items] == ["dining_table_1", "dining_table_2", "dining_table_3", "dog_4", "dog_5", "dog_1"]
     assert [item["label"] for item in items] == ["Yes", "Yes", "No", "Yes", "No", "No"]
     assert items[0] == {"item_id": "dining_table_1", "category_id": 67, "object": "dining table", "image_id": 1, "label": "Yes"}
+
+
+# ----------------------------------------------------------- per_image_queries
+
+
+def test_per_image_queries_one_per_slot_with_slot_label():
+    case = {"case_id": "group_01_dog_1_PNP", "object": "dog", "variant": "PNP", "image_ids": [11, 21, 13]}
+
+    queries = per_image_queries([case])
+
+    assert [query["query_id"] for query in queries] == ["group_01_dog_1_PNP_1", "group_01_dog_1_PNP_2", "group_01_dog_1_PNP_3"]
+    assert [query["slot"] for query in queries] == [1, 2, 3]
+    assert [query["label"] for query in queries] == ["Yes", "No", "Yes"]  # P, N, P
+    # 세 질문 모두 같은 이미지 3장을 같은 순서로 넣는다
+    assert all(query["image_ids"] == [11, 21, 13] for query in queries)
+    assert all(query["case_id"] == "group_01_dog_1_PNP" for query in queries)
