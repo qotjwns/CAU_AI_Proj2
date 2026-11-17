@@ -10,7 +10,7 @@ from collections import Counter
 import pytest
 
 from mivlm.config import CASES_JSONL, PAIRS_JSON, POOLS_JSON
-from mivlm.data.cases import load_cases
+from mivlm.data.cases import load_cases, pilot_cases
 
 pytestmark = pytest.mark.skipif(
     not (POOLS_JSON.exists() and PAIRS_JSON.exists() and CASES_JSONL.exists()),
@@ -86,3 +86,11 @@ def test_mode_b_moves_the_same_negative(cases):
         by_pair.setdefault((case["group_id"], case["pair_id"]), {})[case["variant"]] = case["image_ids"]
     for key, variants in by_pair.items():
         assert variants["NPP"][0] == variants["PNP"][1] == variants["PPN"][2], key
+
+
+def test_pilot_covers_every_class_and_variant(cases):
+    pilot = pilot_cases(cases)
+
+    assert len(pilot) == 20
+    assert len({case["object"] for case in pilot}) == 20
+    assert {case["variant"] for case in pilot} == set(VARIANT_NAMES)

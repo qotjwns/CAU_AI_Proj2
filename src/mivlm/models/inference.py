@@ -4,6 +4,7 @@
 from mivlm.data.image import image_path
 
 QUESTION = "Is the object category '{object}' present in all 3 images? Please answer with Yes or No."
+GENERATION_KWARGS = {"do_sample": False, "num_beams": 1, "max_new_tokens": 8}
 
 
 def build_messages(image_ids: list[int], question: str) -> list[dict]:
@@ -51,14 +52,7 @@ def infer(model, processor, messages: list[dict]) -> dict:
     ).to(model.device)
     input_length = inputs["input_ids"].shape[1]
 
-    out = model.generate(
-        **inputs,
-        do_sample=False,
-        num_beams=1,
-        max_new_tokens=8,
-        return_dict_in_generate=True,
-        output_logits=True,
-    )
+    out = model.generate(**inputs, **GENERATION_KWARGS, return_dict_in_generate=True, output_logits=True)
     first_logits = out.logits[0][0].float().cpu()  # 첫 생성 위치의 logit, shape (vocab 크기,)
     raw_response = tokenizer.decode(out.sequences[0, input_length:], skip_special_tokens=True)
 
