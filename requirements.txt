@@ -3,6 +3,7 @@ huggingface_hub==2.4.0
 matplotlib==3.11.2
 pytest==9.2.0
 PyYAML==6.0.3
-# GPU 서버는 CUDA 빌드를 PyTorch 인덱스에서 설치 (이전 실험: 2.14.1+cu132)
+# GPU 서버는 torch, torchvision을 CUDA 빌드로 PyTorch 인덱스에서 먼저 설치 (이전 실험: +cu132)
 torch==2.14.1
+torchvision==0.29.1
 transformers==5.22.2
