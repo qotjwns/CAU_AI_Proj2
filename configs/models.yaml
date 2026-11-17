@@ -1,0 +1,7 @@
+# 프로젝트에서 사용하는 모델 목록
+# key: 스크립트·실험 코드에서 부르는 이름 / value: Hugging Face repo id
+
+models:
+  "qwen2.5-vl-3b": "Qwen/Qwen2.5-VL-3B-Instruct"  
+  "qwen2.5-vl-7b": "Qwen/Qwen2.5-VL-7B-Instruct"
+  "internvl3.5-1b": "OpenGVLab/InternVL3_5-1B-HF"
