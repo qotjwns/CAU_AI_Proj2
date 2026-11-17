@@ -57,10 +57,11 @@ def plot_margin_by_variant(rows: list[dict], run: str, out_path: Path) -> None:
         ax.axvline(0, color=MUTED, linewidth=1)
         ax.grid(axis="y")
         ax.tick_params(length=0)
+        # 변형 이름과 요약은 칸 바깥 오른쪽에 적는다. 칸 안에 적으면 margin이 넓게 퍼진 실행에서 막대와 겹친다
         summary = by_variant[variant]
-        ax.text(0.99, 0.80, variant, transform=ax.transAxes, ha="right", fontweight="bold")
-        ax.text(0.99, 0.62, f"mean {summary['mean_margin']:+.2f}\n'Yes' {summary['yes_rate']:.1%}",
-                transform=ax.transAxes, ha="right", va="top", color=INK_SECONDARY, fontsize=9)
+        ax.text(1.02, 0.80, variant, transform=ax.transAxes, fontweight="bold")
+        ax.text(1.02, 0.62, f"mean {summary['mean_margin']:+.2f}\n'Yes' {summary['yes_rate']:.1%}",
+                transform=ax.transAxes, va="top", color=INK_SECONDARY, fontsize=9)
     axes[0].set_xlim(lowest - 0.5, highest + 0.5)
     axes[-1].set_xlabel("logit margin = Yes logit - No logit   (below 0: No more likely, above 0: Yes more likely)")
     fig.supylabel("cases", color=INK_SECONDARY, fontsize=10)
