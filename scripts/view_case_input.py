@@ -12,7 +12,7 @@ from matplotlib.patches import Rectangle
 from mivlm.config import INSTANCES_JSON, PROJECT_ROOT
 from mivlm.data.cases import load_cases
 from mivlm.data.image import image_path
-from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages, infer
+from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages, infer, prepare_inputs
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
@@ -47,9 +47,7 @@ def main() -> None:
     messages = case_messages(case)
     result = infer(model, processor, messages)
 
-    inputs = processor.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
-    )
+    inputs = prepare_inputs(processor, messages)
     grid = inputs["image_grid_thw"].tolist() 
     patches_per_image = inputs["pixel_values"].split([h * w for _, h, w in grid])
     image_token_positions = (inputs["input_ids"][0] == processor.image_token_id).nonzero().flatten().tolist()

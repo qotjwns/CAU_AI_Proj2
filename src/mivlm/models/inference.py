@@ -1,5 +1,5 @@
 """
-추론: 메시지 구성 → 생성 → Yes/No 판정과 첫 토큰 logit margin
+추론: 메시지 구성 → 모델 입력 만들기 → 생성 → Yes/No 판정과 첫 토큰 logit margin
 """
 from mivlm.data.image import image_path
 
@@ -41,6 +41,20 @@ def per_image_messages(query: dict) -> list[dict]:
     return build_messages(query["image_ids"], question)
 
 
+def prepare_inputs(processor, messages: list[dict]):
+    """메시지를 모델 입력으로 바꾼다 (CPU 텐서). 추론과 내부 값 분석이 같은 입력을 쓰도록 한 곳에서 만든다
+
+    Qwen2.5-VL 기준으로 들어 있는 것:
+    input_ids, attention_mask: shape (1, 토큰 수)
+    pixel_values: shape (모든 이미지의 패치 수 합, 1176)
+    image_grid_thw: shape (이미지 수, 3). 이미지마다 (1, 세로 패치 수, 가로 패치 수)
+    add_generation_prompt=True라서 마지막 토큰은 assistant 머리말의 끝이고, 모델은 그 다음 토큰부터 답을 쓴다.
+    """
+    return processor.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
+    )
+
+
 def parse_yes_no(text: str) -> str | None:
     """생성된 텍스트를 "Yes" / "No" / None으로 판정한다
 
@@ -65,9 +79,7 @@ def infer(model, processor, messages: list[dict]) -> dict:
     (yes_id,) = tokenizer.encode("Yes", add_special_tokens=False)
     (no_id,) = tokenizer.encode("No", add_special_tokens=False)
 
-    inputs = processor.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
-    ).to(model.device)
+    inputs = prepare_inputs(processor, messages).to(model.device)
     input_length = inputs["input_ids"].shape[1]
 
     out = model.generate(**inputs, **GENERATION_KWARGS, return_dict_in_generate=True, output_logits=True)
