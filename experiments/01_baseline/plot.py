@@ -14,40 +14,9 @@ from matplotlib.ticker import PercentFormatter
 
 from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
 from mivlm.evaluation.metrics import BOUNDARY_MARGIN, VARIANT_ORDER, load_rows, summarize_by
+from mivlm.plotting import AXIS, BLUE, BLUE_RAMP, GRID, INK, INK_SECONDARY, MUTED, STYLE, SURFACE, save, set_title
 
 EXPERIMENT = "01_baseline"
-
-# 색 (밝은 배경 기준)
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_SECONDARY = "#52514e"
-MUTED = "#898781"  # 강조하지 않는 표시
-GRID = "#e1e0d9"
-AXIS = "#c3c2b7"
-BLUE = "#2a78d6"  # 강조색
-# 값이 클수록 진해지는 한 가지 색의 단계
-BLUE_RAMP = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5",
-             "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"]
-
-STYLE = {
-    "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
-    "axes.edgecolor": AXIS, "axes.spines.top": False, "axes.spines.right": False,
-    "axes.labelcolor": INK_SECONDARY, "axes.titlecolor": INK, "text.color": INK,
-    "xtick.color": AXIS, "ytick.color": AXIS, "xtick.labelcolor": INK_SECONDARY, "ytick.labelcolor": INK_SECONDARY,
-    "grid.color": GRID, "grid.linewidth": 0.8, "axes.axisbelow": True,
-    "font.size": 10, "axes.titlesize": 13, "axes.titleweight": "bold",
-}
-
-
-def set_title(ax, title: str, subtitle: str) -> None:
-    ax.set_title(title, loc="left", pad=24)
-    ax.text(0, 1.03, subtitle, transform=ax.transAxes, color=INK_SECONDARY, fontsize=9)
-
-
-def save(fig, out_path: Path) -> None:
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[ok] {out_path}")
 
 
 def plot_yes_rate_by_variant(rows: list[dict], run: str, out_path: Path) -> None:
