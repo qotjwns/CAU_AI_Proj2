@@ -1,8 +1,8 @@
 """
-src/mivlm/data/cases.py의 pilot_cases 단위 테스트
+src/mivlm/data/cases.py 단위 테스트
 pytest tests/unit/test_cases.py -v
 """
-from mivlm.data.cases import pilot_cases
+from mivlm.data.cases import pilot_cases, single_image_items
 
 VARIANTS = ["PPP", "PPN", "PNN", "NNN", "NPP", "PNP"]
 CLASSES = ["person", "dining table", "chair", "couch", "cat", "train", "bus"]
@@ -37,3 +37,20 @@ def test_all_from_first_pair_of_first_group():
     for case in pilot_cases(_make_cases()):
         assert case["group_id"].startswith("group_01_")
         assert case["pair_id"] == 1
+
+
+# ---------------------------------------------------------- single_image_items
+
+
+def test_single_image_items_positives_then_negatives_per_class():
+    # 이미지 1은 dining table의 P이면서 dog의 N이다. 질문이 다르므로 서로 다른 항목이어야 한다
+    pools = [
+        {"category_id": 67, "name": "dining table", "positives": [1, 2], "negatives": [3]},
+        {"category_id": 18, "name": "dog", "positives": [4], "negatives": [5, 1]},
+    ]
+
+    items = single_image_items(pools)
+
+    assert [item["item_id"] for item in items] == ["dining_table_1", "dining_table_2", "dining_table_3", "dog_4", "dog_5", "dog_1"]
+    assert [item["label"] for item in items] == ["Yes", "Yes", "No", "Yes", "No", "No"]
+    assert items[0] == {"item_id": "dining_table_1", "category_id": 67, "object": "dining table", "image_id": 1, "label": "Yes"}

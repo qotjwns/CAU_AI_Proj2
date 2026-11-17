@@ -1,15 +1,41 @@
 """
-cases.jsonl 읽기
+케이스와 pool 읽기, 추론 항목 만들기
 """
 import json
 
-from mivlm.config import CASES_JSONL
+from mivlm.config import CASES_JSONL, POOLS_JSON
 
 
 def load_cases() -> list[dict]:
     """data/cases/cases.jsonl의 케이스 전체 (한 줄에 케이스 하나)"""
     with open(CASES_JSONL) as f:
         return [json.loads(line) for line in f]
+
+
+def load_pools() -> list[dict]:
+    """data/cases/pools.json: 클래스마다 positives 8장과 negatives 8장"""
+    with open(POOLS_JSON) as f:
+        return json.load(f)
+
+
+def single_image_items(pools: list[dict]) -> list[dict]:
+    """이미지 1장 추론 항목: 클래스마다 P 8장, N 8장 순서로 만든다 (클래스 20개면 320개)
+
+    label은 "이 이미지에 이 객체가 있는가"의 정답이다. P 이미지면 Yes, N 이미지면 No.
+    같은 이미지가 두 클래스에 쓰이면 질문이 다르므로 서로 다른 항목이 된다.
+    """
+    items = []
+    for pool in pools:
+        for label, image_ids in [("Yes", pool["positives"]), ("No", pool["negatives"])]:
+            for image_id in image_ids:
+                items.append({
+                    "item_id": f"{pool['name'].replace(' ', '_')}_{image_id}",
+                    "category_id": pool["category_id"],
+                    "object": pool["name"],
+                    "image_id": image_id,
+                    "label": label,
+                })
+    return items
 
 
 def pilot_cases(cases: list[dict]) -> list[dict]:

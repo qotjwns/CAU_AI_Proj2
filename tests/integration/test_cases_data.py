@@ -10,7 +10,7 @@ from collections import Counter
 import pytest
 
 from mivlm.config import CASES_JSONL, PAIRS_JSON, POOLS_JSON
-from mivlm.data.cases import load_cases, pilot_cases
+from mivlm.data.cases import load_cases, load_pools, pilot_cases, single_image_items
 
 pytestmark = pytest.mark.skipif(
     not (POOLS_JSON.exists() and PAIRS_JSON.exists() and CASES_JSONL.exists()),
@@ -94,3 +94,16 @@ def test_pilot_covers_every_class_and_variant(cases):
     assert len(pilot) == 20
     assert len({case["object"] for case in pilot}) == 20
     assert {case["variant"] for case in pilot} == set(VARIANT_NAMES)
+
+
+def test_single_image_items_cover_every_pool_image():
+    items = single_image_items(load_pools())
+
+    assert len(items) == 320
+    assert len({item["item_id"] for item in items}) == 320
+    assert sum(item["label"] == "Yes" for item in items) == 160
+    # 파일럿(8개마다 하나): 클래스마다 첫 P와 첫 N
+    pilot = items[::8]
+    assert len(pilot) == 40
+    assert len({item["object"] for item in pilot}) == 20
+    assert sum(item["label"] == "Yes" for item in pilot) == 20
