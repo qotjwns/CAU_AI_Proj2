@@ -13,10 +13,9 @@ from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter
 
 from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
-from mivlm.evaluation.metrics import BOUNDARY_MARGIN, load_rows, summarize_by
+from mivlm.evaluation.metrics import BOUNDARY_MARGIN, VARIANT_ORDER, load_rows, summarize_by
 
 EXPERIMENT = "01_baseline"
-VARIANTS = ["PPP", "PPN", "PNP", "NPP", "PNN", "NNN"]  # N 개수 순서 (0, 1, 1, 1, 2, 3)
 
 # 색 (밝은 배경 기준)
 SURFACE = "#fcfcfb"
@@ -54,11 +53,11 @@ def save(fig, out_path: Path) -> None:
 def plot_yes_rate_by_variant(rows: list[dict], run: str, out_path: Path) -> None:
     """변형마다 Yes로 답한 비율. PPP만 정답이 Yes이고, 나머지에서는 이 비율이 False-Yes rate다"""
     by_variant = summarize_by(rows, "variant")
-    rates = [by_variant[variant]["yes_rate"] for variant in VARIANTS]
-    colors = [MUTED if variant == "PPP" else BLUE for variant in VARIANTS]
+    rates = [by_variant[variant]["yes_rate"] for variant in VARIANT_ORDER]
+    colors = [MUTED if variant == "PPP" else BLUE for variant in VARIANT_ORDER]
 
     fig, ax = plt.subplots(figsize=(7, 4.2))
-    bars = ax.bar(VARIANTS, rates, width=0.3, color=colors)
+    bars = ax.bar(VARIANT_ORDER, rates, width=0.3, color=colors)
     ax.bar_label(bars, labels=[f"{rate:.1%}" for rate in rates], padding=3, color=INK)
     ax.set_ylim(0, 1)
     ax.yaxis.set_major_formatter(PercentFormatter(1.0))
@@ -75,15 +74,15 @@ def plot_yes_rate_by_variant(rows: list[dict], run: str, out_path: Path) -> None
 def plot_margin_by_variant(rows: list[dict], run: str, out_path: Path) -> None:
     """변형마다 logit margin의 분포. 0의 오른쪽이면 Yes, 왼쪽이면 No가 더 그럴듯하다는 뜻"""
     by_variant = summarize_by(rows, "variant")
-    margins = {variant: [row["logit_margin"] for row in rows if row["variant"] == variant] for variant in VARIANTS}
+    margins = {variant: [row["logit_margin"] for row in rows if row["variant"] == variant] for variant in VARIANT_ORDER}
     lowest = min(row["logit_margin"] for row in rows)
     highest = max(row["logit_margin"] for row in rows)
     # bf16 margin은 0.125의 배수다. 값이 구간 경계에 걸리지 않게 경계를 0.1875 + 0.375k에 둔다.
     # 그러면 구간 하나에 값이 정확히 3개씩 들어가고, 가운데 구간은 -0.125, 0, +0.125를 담는다
     edges = [0.1875 + 0.375 * k for k in range(-60, 60)]
 
-    fig, axes = plt.subplots(len(VARIANTS), 1, figsize=(7, 8.5), sharex=True, sharey=True)
-    for ax, variant in zip(axes, VARIANTS):
+    fig, axes = plt.subplots(len(VARIANT_ORDER), 1, figsize=(7, 8.5), sharex=True, sharey=True)
+    for ax, variant in zip(axes, VARIANT_ORDER):
         ax.axvspan(-BOUNDARY_MARGIN, BOUNDARY_MARGIN, color=GRID, linewidth=0)
         ax.hist(margins[variant], bins=edges, color=BLUE, rwidth=0.85)
         ax.axvline(0, color=MUTED, linewidth=1)
@@ -106,14 +105,14 @@ def plot_yes_rate_by_class(rows: list[dict], run: str, out_path: Path) -> None:
                 for name in summarize_by(rows, "object")}
     # N이 1장인 세 변형의 Yes 비율이 높은 클래스를 위에 둔다
     names = sorted(by_class, key=lambda name: -sum(by_class[name][variant]["yes_rate"] for variant in ["PPN", "PNP", "NPP"]))
-    matrix = [[by_class[name][variant]["yes_rate"] for variant in VARIANTS] for name in names]
+    matrix = [[by_class[name][variant]["yes_rate"] for variant in VARIANT_ORDER] for name in names]
 
     fig, ax = plt.subplots(figsize=(6.2, 7.5))
     # 칸 사이를 배경색 선으로 띄운다
     mesh = ax.pcolormesh(matrix, cmap=LinearSegmentedColormap.from_list("blue_ramp", BLUE_RAMP), vmin=0, vmax=1,
                          edgecolors=SURFACE, linewidth=2)
     ax.invert_yaxis()
-    ax.set_xticks([i + 0.5 for i in range(len(VARIANTS))], ["PPP\n(Yes is correct)"] + VARIANTS[1:])
+    ax.set_xticks([i + 0.5 for i in range(len(VARIANT_ORDER))], ["PPP\n(Yes is correct)"] + VARIANT_ORDER[1:])
     ax.set_yticks([i + 0.5 for i in range(len(names))], names)
     ax.tick_params(length=0)
     for spine in ax.spines.values():

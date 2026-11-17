@@ -71,7 +71,7 @@ def test_join_merges_case_and_result_fields():
     cases = [{"case_id": "a", "label": "Yes"}, {"case_id": "b", "label": "No"}]
     results = [{"case_id": "b", "prediction": "No"}, {"case_id": "a", "prediction": "Yes"}]
 
-    assert join_results(cases, results) == [
+    assert join_results(cases, results, "case_id") == [
         {"case_id": "a", "label": "Yes", "prediction": "Yes"},
         {"case_id": "b", "label": "No", "prediction": "No"},
     ]
@@ -81,11 +81,11 @@ def test_join_rejects_missing_unknown_and_duplicate_results():
     cases = [{"case_id": "a"}, {"case_id": "b"}]
 
     with pytest.raises(ValueError):
-        join_results(cases, [{"case_id": "a"}])                                      # b의 결과가 없음
+        join_results(cases, [{"case_id": "a"}], "case_id")                                      # b의 결과가 없음
     with pytest.raises(ValueError):
-        join_results(cases, [{"case_id": "a"}, {"case_id": "b"}, {"case_id": "x"}])  # 모르는 case_id
+        join_results(cases, [{"case_id": "a"}, {"case_id": "b"}, {"case_id": "x"}], "case_id")  # 모르는 case_id
     with pytest.raises(ValueError):
-        join_results(cases, [{"case_id": "a"}, {"case_id": "a"}])                    # 중복
+        join_results(cases, [{"case_id": "a"}, {"case_id": "a"}], "case_id")                    # 중복
 
 
 # ---------------------------------------------------------------- compare_runs
