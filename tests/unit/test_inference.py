@@ -2,8 +2,14 @@
 src/mivlm/models/inference.py 단위 테스트 (모델은 로딩하지 않는다)
 pytest tests/unit/test_inference.py -v
 """
+import torch
+
 from mivlm.data.image import image_path
-from mivlm.models.inference import build_messages, case_messages, parse_yes_no, per_image_messages, single_image_messages
+from mivlm.models.inference import (
+    build_messages, case_messages, image_token_spans, parse_yes_no, per_image_messages, single_image_messages,
+)
+
+PAD = 9  # 테스트용 가짜 이미지 토큰 id
 
 # ---------------------------------------------------------------- parse_yes_no
 
@@ -96,3 +102,31 @@ def test_single_image_message_has_one_image_and_the_b_question():
     assert [part["type"] for part in content] == ["image", "text"]
     assert content[0]["image"] == str(image_path(139))
     assert content[1]["text"] == "Is the object category 'dining table' present in this image? Please answer with Yes or No."
+
+
+# ----------------------------------------------------------- image_token_spans
+
+
+def test_spans_one_per_image_in_input_order():
+    #                 위치:   0  1  2    3    4  5  6    7    8    9  10
+    input_ids = torch.tensor([1, 2, PAD, PAD, 3, 4, PAD, PAD, PAD, 5, 6])
+
+    assert image_token_spans(input_ids, PAD) == [(2, 4), (6, 9)]
+
+
+def test_span_slices_contain_only_image_tokens():
+    input_ids = torch.tensor([1, 2, PAD, PAD, 3, 4, PAD, PAD, PAD, 5, 6])
+
+    spans = image_token_spans(input_ids, PAD)
+
+    # end를 포함하지 않으므로 input_ids[start:end]가 그 이미지의 토큰 전부이고, end - start가 토큰 수다
+    assert [input_ids[start:end].tolist() for start, end in spans] == [[PAD, PAD], [PAD, PAD, PAD]]
+    assert [end - start for start, end in spans] == [2, 3]
+
+
+def test_spans_empty_without_image_tokens():
+    assert image_token_spans(torch.tensor([1, 2, 3]), PAD) == []
+
+
+def test_spans_at_both_ends_of_the_input():
+    assert image_token_spans(torch.tensor([PAD, PAD, 1, PAD]), PAD) == [(0, 2), (3, 4)]

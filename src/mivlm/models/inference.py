@@ -1,6 +1,8 @@
 """
 추론: 메시지 구성 → 모델 입력 만들기 → 생성 → Yes/No 판정과 첫 토큰 logit margin
 """
+import torch
+
 from mivlm.data.image import image_path
 
 # 질문 문구는 실험의 핵심 조건이다. 바꾸면 이미 받은 결과와 다른 실험이 된다
@@ -53,6 +55,23 @@ def prepare_inputs(processor, messages: list[dict]):
     return processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
     )
+
+
+def image_token_spans(input_ids: torch.Tensor, image_token_id: int) -> list[tuple[int, int]]:
+    """이미지마다 그 토큰이 놓인 구간 (start, end)를 입력 순서대로 돌려준다. end는 포함하지 않는다
+
+    input_ids: 입력 하나의 토큰 id, shape (토큰 수,)
+    한 이미지의 토큰은 연속으로 놓이고 이미지 사이에는 다른 토큰이 있으므로, 연속된 묶음 하나가 이미지 하나다.
+    층 하나의 hidden state가 hidden (토큰 수, 벡터 크기)일 때 hidden[start:end]가 그 이미지의 표현이다.
+    """
+    positions = (input_ids == image_token_id).nonzero().flatten().tolist()
+    spans = []
+    for position in positions:
+        if spans and spans[-1][1] == position:  # 바로 앞 구간에 이어지는 토큰
+            spans[-1] = (spans[-1][0], position + 1)
+        else:  # 새 이미지의 첫 토큰
+            spans.append((position, position + 1))
+    return spans
 
 
 def parse_yes_no(text: str) -> str | None:

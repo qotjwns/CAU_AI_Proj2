@@ -12,7 +12,7 @@ from matplotlib.patches import Rectangle
 from mivlm.config import INSTANCES_JSON, PROJECT_ROOT
 from mivlm.data.cases import load_cases
 from mivlm.data.image import image_path
-from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages, infer, prepare_inputs
+from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages, image_token_spans, infer, prepare_inputs
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
@@ -48,23 +48,21 @@ def main() -> None:
     result = infer(model, processor, messages)
 
     inputs = prepare_inputs(processor, messages)
-    grid = inputs["image_grid_thw"].tolist() 
+    grid = inputs["image_grid_thw"].tolist()
     patches_per_image = inputs["pixel_values"].split([h * w for _, h, w in grid])
-    image_token_positions = (inputs["input_ids"][0] == processor.image_token_id).nonzero().flatten().tolist()
+    spans = image_token_spans(inputs["input_ids"][0], processor.image_token_id)
 
     print(processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
     print(f"case: {case}")
     print(f"result: {result}")
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
-    first = 0 
     for slot, image_id in enumerate(case["image_ids"]):
         letter = case["variant"][slot]
         _, grid_h, grid_w = grid[slot]
-        n_tokens = grid_h * grid_w // processor.image_processor.merge_size**2
-        start, end = image_token_positions[first], image_token_positions[first + n_tokens - 1]
-        first += n_tokens
-        print(f"slot {slot + 1}: {letter} image {image_id}, grid {grid_h}x{grid_w}, tokens {start}-{end} ({n_tokens})")
+        start, end = spans[slot]  # end는 포함하지 않는다. 화면에는 마지막 토큰의 위치(end - 1)를 적는다
+        n_tokens = end - start
+        print(f"slot {slot + 1}: {letter} image {image_id}, grid {grid_h}x{grid_w}, tokens {start}-{end - 1} ({n_tokens})")
 
         top = axes[0, slot]
         top.imshow(plt.imread(image_path(image_id)), cmap="gray")
@@ -77,7 +75,7 @@ def main() -> None:
 
         bottom = axes[1, slot]
         bottom.imshow(restore_image(patches_per_image[slot], grid_h, grid_w, processor.image_processor).numpy())
-        bottom.set_title(f"model input: tokens {start}-{end} ({n_tokens})")
+        bottom.set_title(f"model input: tokens {start}-{end - 1} ({n_tokens})")
         bottom.axis("off")
 
     fig.suptitle(
