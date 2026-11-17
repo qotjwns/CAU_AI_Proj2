@@ -9,7 +9,6 @@ import random
 from build_pools import POOLS_JSON, PROJECT_ROOT, SEED
 
 PAIRS_JSON = PROJECT_ROOT / "data" / "cases" / "pairs.json"
-# group마다 P 8장 중 어느 위치의 4장을 쓸지
 GROUP_PATTERNS = [(0, 1, 2, 3), (4, 5, 6, 7), (0, 2, 4, 6), (1, 3, 5, 7), (0, 3, 4, 7)]
 PAIR_SIZE = 3
 
