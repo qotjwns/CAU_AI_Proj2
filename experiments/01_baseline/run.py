@@ -2,6 +2,7 @@
 STEP 1 baseline: 케이스를 추론해 outputs/predictions/01_baseline/<모델 이름>/에 결과를 저장
 python experiments/01_baseline/run.py --pilot     # 클래스별 1개, 20케이스 (Mac)
 python experiments/01_baseline/run.py             # 전체 2,400케이스 (GPU 서버)
+python experiments/01_baseline/run.py --dtype float32     # float32로 실행, bf16 결과와 비교용 (GPU 서버)
 """
 import argparse
 import hashlib
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 
+import torch
 from huggingface_hub import try_to_load_from_cache
 from tqdm import tqdm
 
@@ -42,16 +44,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="STEP 1 baseline 추론")
     parser.add_argument("--model", choices=list(models), default="qwen2.5-vl-3b")
     parser.add_argument("--pilot", action="store_true", help="클래스별 1개씩 20케이스만 실행")
+    parser.add_argument("--dtype", choices=["float32"], help="지정하지 않으면 device 기본값 (CUDA, MPS는 bfloat16)")
     args = parser.parse_args()
 
     cases = load_cases()
     if args.pilot:
         cases = pilot_cases(cases)
-    run_dir = PROJECT_ROOT / "outputs" / "predictions" / EXPERIMENT / (args.model + ("_pilot" if args.pilot else ""))
+    # 결과 폴더 이름: <모델>[_float32][_pilot]
+    run_name = args.model + (f"_{args.dtype}" if args.dtype else "") + ("_pilot" if args.pilot else "")
+    run_dir = PROJECT_ROOT / "outputs" / "predictions" / EXPERIMENT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     repo_id = models[args.model]
-    model, processor = load_model(args.model)
+    model, processor = load_model(args.model, getattr(torch, args.dtype) if args.dtype else None)
     meta = {
         "experiment": EXPERIMENT,
         "pilot": args.pilot,
@@ -65,6 +70,8 @@ def main() -> None:
             "commit": Path(try_to_load_from_cache(repo_id, "config.json")).parent.name,
             "device": str(model.device),
             "dtype": str(model.dtype),
+            # 둘 다 False여야 float32 연산이 정확한 float32로 계산된다 (load_model이 끈다)
+            "tf32": {"matmul": torch.backends.cuda.matmul.allow_tf32, "cudnn": torch.backends.cudnn.allow_tf32},
             "attn_implementation": model.config._attn_implementation,
         },
         "preprocessing": {
