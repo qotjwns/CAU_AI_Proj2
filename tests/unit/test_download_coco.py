@@ -1,4 +1,7 @@
-"""scripts/download_coco.py 단위 테스트"""
+"""
+scripts/download_coco.py 단위 테스트
+pytest tests/unit/test_download_coco.py -v
+"""
 import json
 import pytest
 

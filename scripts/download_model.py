@@ -1,4 +1,8 @@
-"""configs/models.yaml에 등록된 모델을 Hugging Face 캐시로 다운로드"""
+"""
+configs/models.yaml에 등록된 모델을 Hugging Face 캐시로 다운로드
+python scripts/download_model.py --help            # 등록된 모델 이름 확인
+python scripts/download_model.py qwen2.5-vl-3b
+"""
 import argparse
 from pathlib import Path
 

@@ -1,4 +1,7 @@
-"""COCO val2017 이미지와 COCO-ReM annotation 다운로드"""
+"""
+COCO val2017 이미지와 COCO-ReM annotation 다운로드
+python scripts/download_coco.py
+"""
 import json
 import urllib.request
 import zipfile
@@ -73,7 +76,7 @@ def main() -> None:
         with zipfile.ZipFile(images_zip) as zf:
             zf.extractall(COCO_ROOT)
         print(f"[extract] {INSTANCES_JSON}")
-        
+
         with zipfile.ZipFile(annotations_zip) as zf:
             zf.extractall(annotations_dir, members=[INSTANCES_JSON])
 
