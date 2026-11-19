@@ -7,17 +7,15 @@ A는 outputs/predictions/01_baseline/<실행 이름>/에서, B와 C는 02_decomp
 """
 import argparse
 import csv
-from collections import Counter
 
-from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
-from mivlm.data.cases import load_cases
+from mivlm.config import TABLES_DIR
 from mivlm.evaluation.decomposition import (
-    combine_per_image, combine_single_image, images_all_correct, load_per_image_rows, load_single_image_rows,
+    a_false_yes_answers, images_all_correct, load_case_rows, main_metrics, one_n_outcomes,
 )
-from mivlm.evaluation.metrics import VARIANT_ORDER, load_rows, summarize, summarize_by
+from mivlm.evaluation.metrics import VARIANT_ORDER, summarize, summarize_by
 from mivlm.evaluation.report import format_value, print_table
 
-ONE_N_VARIANTS = ["PPN", "PNP", "NPP"]  # N이 1장인 변형
+NAMES = {"A": "A (3장 동시)", "B": "B (1장씩 AND)", "C": "C (자리별 AND)"}  # 표에 적는 실험 이름
 
 
 def percent(count: int, total: int) -> str:
@@ -37,42 +35,34 @@ def main() -> None:
     parser.add_argument("run", help="실행 폴더 이름. 예: qwen2.5-vl-3b")
     args = parser.parse_args()
 
-    # 이미지별 답 (B: 320개, C: 7,200개)
-    b_image_rows = load_single_image_rows(PREDICTIONS_DIR / "02_decomposition" / "b_single_image" / args.run)
-    c_image_rows = load_per_image_rows(PREDICTIONS_DIR / "02_decomposition" / "c_per_image_answers" / args.run)
-    # 케이스 단위의 답 (각 2,400개). B와 C는 이미지별 답을 AND로 합친 것
-    cases = load_cases()
-    case_rows = {
-        "A (3장 동시)": load_rows(PREDICTIONS_DIR / "01_baseline" / args.run),
-        "B (1장씩 AND)": combine_single_image(cases, b_image_rows),
-        "C (자리별 AND)": combine_per_image(cases, c_image_rows),
-    }
-    a_rows, b_rows, c_rows = case_rows.values()
+    # case_rows: 케이스 단위의 답 (A, B, C 각 2,400개. B와 C는 이미지별 답을 AND로 합친 것)
+    # b_image_rows, c_image_rows: 이미지별 답 (B: 320개, C: 7,200개)
+    case_rows, b_image_rows, c_image_rows = load_case_rows(args.run)
+    a_rows, b_rows, c_rows = case_rows["A"], case_rows["B"], case_rows["C"]
 
     # 1. 메인 결과표
     # 형식 오류율: 모델의 답이 Yes도 No도 아닌 비율. A는 케이스 2,400개, B는 답 320개, C는 답 7,200개 기준
-    answer_rows = {"A (3장 동시)": a_rows, "B (1장씩 AND)": b_image_rows, "C (자리별 AND)": c_image_rows}
+    answer_rows = {"A": a_rows, "B": b_image_rows, "C": c_image_rows}
     main_table = {}
-    for name, rows in case_rows.items():
-        one_n = summarize([row for row in rows if row["variant"] in ONE_N_VARIANTS])
-        ppp = summarize([row for row in rows if row["variant"] == "PPP"])
-        unparsed = sum(row["prediction"] is None for row in answer_rows[name])
-        main_table[name] = [
-            format_value("accuracy", summarize(rows)["accuracy"]),
-            format_value("false_yes_rate", one_n["false_yes_rate"]),
-            format_value("accuracy", ppp["accuracy"]),
-            percent(unparsed, len(answer_rows[name])),
+    for key, rows in case_rows.items():
+        metrics = main_metrics(rows)
+        unparsed = sum(row["prediction"] is None for row in answer_rows[key])
+        main_table[NAMES[key]] = [
+            format_value("accuracy", metrics["accuracy"]),
+            format_value("false_yes_rate", metrics["one_n_false_yes_rate"]),
+            format_value("accuracy", metrics["ppp_accuracy"]),
+            percent(unparsed, len(answer_rows[key])),
         ]
     print_columns("1. 메인 결과", ["전체 정확도", "N 1장(PPN, PNP, NPP) False-Yes", "PPP 정확도", "형식 오류율"], main_table)
 
     # 2. 변형별 Yes 응답 비율. PPP는 Yes가 정답이고, 나머지는 이 비율이 False-Yes rate다
-    by_variant = {name: summarize_by(rows, "variant") for name, rows in case_rows.items()}
+    by_variant = {NAMES[key]: summarize_by(rows, "variant") for key, rows in case_rows.items()}
     print_columns("2. 변형별 Yes로 답한 비율 (PPP만 Yes가 정답)", VARIANT_ORDER,
-                  {name: [format_value("yes_rate", by_variant[name][variant]["yes_rate"]) for variant in VARIANT_ORDER]
-                   for name in case_rows})
+                  {name: [format_value("yes_rate", summaries[variant]["yes_rate"]) for variant in VARIANT_ORDER]
+                   for name, summaries in by_variant.items()})
 
     # 3. 케이스별 원본 표: 파일로 저장
-    table_path = PROJECT_ROOT / "outputs" / "tables" / "02_decomposition" / f"{args.run}_cases.csv"
+    table_path = TABLES_DIR / "02_decomposition" / f"{args.run}_cases.csv"
     table_path.parent.mkdir(parents=True, exist_ok=True)
     with open(table_path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -85,15 +75,13 @@ def main() -> None:
     print(f"\n[3. 케이스별 원본 표] {len(a_rows)}줄 -> {table_path}")
 
     # 4. A가 False-Yes인 케이스를 B, C의 결과로 나눈다
-    b_by_id = {row["case_id"]: row for row in b_rows}
-    c_by_id = {row["case_id"]: row for row in c_rows}
-    a_false_yes = [row for row in a_rows if row["label"] == "No" and row["prediction"] == "Yes"]
-    counts = Counter((b_by_id[row["case_id"]]["prediction"], c_by_id[row["case_id"]]["prediction"]) for row in a_false_yes)
-    print(f"\n[4. A가 False-Yes인 케이스 {len(a_false_yes)}개: B와 C의 답]")
+    counts = a_false_yes_answers(case_rows)
+    n_false_yes = sum(counts.values())
+    print(f"\n[4. A가 False-Yes인 케이스 {n_false_yes}개: B와 C의 답]")
     meanings = {("No", "No"): "B, C 모두 맞힘", ("No", "Yes"): "B만 맞힘", ("Yes", "No"): "C만 맞힘", ("Yes", "Yes"): "B, C 모두 False-Yes"}
     for (b_answer, c_answer), n in sorted(counts.items(), key=lambda item: -item[1]):
         meaning = meanings.get((b_answer, c_answer), "판정 불가 포함")
-        print(f"  B {str(b_answer):<5} C {str(c_answer):<5} {n:>5}  {percent(n, len(a_false_yes)):>7}  {meaning}")
+        print(f"  B {str(b_answer):<5} C {str(c_answer):<5} {n:>5}  {percent(n, n_false_yes):>7}  {meaning}")
 
     # 5. 이미지별 판단. AND는 No가 하나만 있어도 No가 되므로, 케이스 정확도만으로는 이미지별 오류가 가려진다
     #    false_no_rate: P 이미지를 No라고 한 비율 / false_yes_rate: N 이미지를 Yes라고 한 비율
@@ -105,13 +93,12 @@ def main() -> None:
     # 6. AND가 가리는 오류: 케이스의 답은 맞았지만 이미지별 답은 틀린 경우를 드러낸다
     #    N이 1장인 케이스는 N 자리만 No라고 하면 AND가 No로 정답이 되므로, P 자리를 No라고 틀려도 가려진다
     hidden_table = {}
-    for name, rows in [("B (1장씩 AND)", b_rows), ("C (자리별 AND)", c_rows)]:
-        one_n = [row for row in rows if row["variant"] in ONE_N_VARIANTS]
-        one_n_correct = [row for row in one_n if row["prediction"] == "No"]
-        hidden_table[name] = [
+    for key, rows in [("B", b_rows), ("C", c_rows)]:
+        outcomes = one_n_outcomes(rows)
+        hidden_table[NAMES[key]] = [
             percent(sum(images_all_correct(row) for row in rows), len(rows)),
-            f"{len(one_n_correct)} / {len(one_n)}",
-            percent(sum(images_all_correct(row) for row in one_n_correct), len(one_n_correct)),
+            f"{outcomes['answered_no']} / {outcomes['n']}",
+            percent(outcomes["all_images_correct"], outcomes["answered_no"]),
         ]
     print_columns("6. AND가 가리는 오류",
                   ["세 이미지 답이 모두 맞은 케이스", "N 1장 케이스 중 No로 맞힌 수", "  그중 세 이미지 답이 모두 맞음"], hidden_table)

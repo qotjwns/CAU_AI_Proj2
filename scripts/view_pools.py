@@ -7,10 +7,10 @@ import json
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from mivlm.config import INSTANCES_JSON, POOLS_JSON, PROJECT_ROOT
+from mivlm.config import FIGURES_DIR, INSTANCES_JSON, POOLS_JSON
 from mivlm.data.image import image_path
 
-OUT_DIR = PROJECT_ROOT / "outputs" / "figures" / "pools"
+OUT_DIR = FIGURES_DIR / "pools"
 
 
 def main() -> None:

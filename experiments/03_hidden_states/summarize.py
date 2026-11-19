@@ -7,7 +7,6 @@ python experiments/03_hidden_states/summarize.py qwen2.5-vl-3b_float32
 기준선이 크면 계산 오차가 섞인 것이므로 경고를 출력한다 (CUDA의 bf16 실행이 그렇다. 그때는 float32 실행을 쓴다).
 """
 import argparse
-import json
 
 from mivlm.analysis.comparisons import (
     ONE_IMAGE_CHANGED, is_position_controlled, load_comparison_rows, median_by_layer, same_prefix_baseline,
@@ -16,6 +15,7 @@ from mivlm.analysis.hidden_states import SAME_WITHIN
 from mivlm.analysis.pair_record import COMPARISONS
 from mivlm.config import PREDICTIONS_DIR
 from mivlm.evaluation.report import print_layer_table
+from mivlm.run_files import read_meta
 
 EXPERIMENT = "03_hidden_states"
 
@@ -26,8 +26,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run_dir = PREDICTIONS_DIR / EXPERIMENT / args.run
-    with open(run_dir / "meta.json") as f:
-        meta = json.load(f)
+    meta = read_meta(run_dir)
     rows = load_comparison_rows(run_dir)
     by_index = {index: [row for row in rows if row["index"] == index] for index in range(len(COMPARISONS))}
     n_pairs = len(by_index[0])

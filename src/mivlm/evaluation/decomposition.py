@@ -3,11 +3,14 @@
 
 B는 이미지를 1장씩 따로 물은 결과, C는 3장을 넣고 자리를 지목해서 물은 결과다.
 케이스의 질문이 "3장 모두에 있는가"이므로 이미지별 답 3개를 AND로 합친다.
+요약 표(summarize.py)와 그림(plot.py)이 같은 숫자를 쓰도록, 읽기와 세는 일을 여기서 한다.
 """
-from pathlib import Path
+from collections import Counter
 
+from mivlm.config import PREDICTIONS_DIR
 from mivlm.data.cases import load_cases, load_pools, per_image_queries, single_image_items
-from mivlm.evaluation.metrics import join_results, read_results
+from mivlm.evaluation.metrics import ONE_N_VARIANTS, join_results, load_rows, summarize
+from mivlm.run_files import read_results
 
 
 def and_answers(predictions: list[str | None]) -> str | None:
@@ -64,11 +67,65 @@ def images_all_correct(row: dict) -> bool:
     return row["image_predictions"] == expected
 
 
-def load_single_image_rows(run_dir: Path) -> list[dict]:
-    """B 실행 폴더의 결과를 이미지 1장 항목(320개)과 합친 행으로 읽는다. 전체 실행 결과용"""
-    return join_results(single_image_items(load_pools()), read_results(run_dir), "item_id")
+def load_case_rows(run: str) -> tuple[dict[str, list[dict]], list[dict], list[dict]]:
+    """실행 이름 하나의 A, B, C 결과를 읽어 케이스 단위의 행으로 맞춘다 (전체 실행 결과용)
+
+    run: 실행 폴더 이름. 예: "qwen2.5-vl-3b"
+        A는 01_baseline/<run>/에서, B와 C는 02_decomposition/ 아래 같은 이름의 폴더에서 읽는다.
+    반환: (case_rows, b_image_rows, c_image_rows)
+        case_rows: {"A": 행들, "B": 행들, "C": 행들}. 셋 다 케이스 2,400개가 같은 순서로 들어 있고,
+            B와 C는 이미지별 답을 AND로 합친 것이다
+        b_image_rows: B의 이미지별 답 (이미지 1장 항목 320개와 합친 행)
+        c_image_rows: C의 이미지별 답 (자리별 질문 항목 7,200개와 합친 행)
+    """
+    cases = load_cases()
+    b_image_rows = join_results(single_image_items(load_pools()),
+                                read_results(PREDICTIONS_DIR / "02_decomposition" / "b_single_image" / run), "item_id")
+    c_image_rows = join_results(per_image_queries(cases),
+                                read_results(PREDICTIONS_DIR / "02_decomposition" / "c_per_image_answers" / run), "query_id")
+    case_rows = {
+        "A": load_rows(PREDICTIONS_DIR / "01_baseline" / run),
+        "B": combine_single_image(cases, b_image_rows),
+        "C": combine_per_image(cases, c_image_rows),
+    }
+    return case_rows, b_image_rows, c_image_rows
 
 
-def load_per_image_rows(run_dir: Path) -> list[dict]:
-    """C 실행 폴더의 결과를 자리별 질문 항목(7,200개)과 합친 행으로 읽는다. 전체 실행 결과용"""
-    return join_results(per_image_queries(load_cases()), read_results(run_dir), "query_id")
+def main_metrics(rows: list[dict]) -> dict:
+    """메인 결과의 지표 셋: 전체 정확도, N이 1장인 변형의 False-Yes rate, PPP 정확도"""
+    return {
+        "accuracy": summarize(rows)["accuracy"],
+        "one_n_false_yes_rate": summarize([row for row in rows if row["variant"] in ONE_N_VARIANTS])["false_yes_rate"],
+        "ppp_accuracy": summarize([row for row in rows if row["variant"] == "PPP"])["accuracy"],
+    }
+
+
+def a_false_yes_answers(case_rows: dict[str, list[dict]]) -> Counter:
+    """A가 False-Yes인 케이스를 (B의 답, C의 답)으로 나눠 센다. 개수의 합이 A의 False-Yes 케이스 수다
+
+    case_rows: load_case_rows의 첫 번째 결과. B와 C의 답은 AND로 합친 케이스 단위의 답이다
+    예: {("No", "No"): 7, ("No", "Yes"): 3}은 B, C 모두 맞힌 케이스가 7개, B만 맞힌 케이스가 3개
+    """
+    b_answers = {row["case_id"]: row["prediction"] for row in case_rows["B"]}
+    c_answers = {row["case_id"]: row["prediction"] for row in case_rows["C"]}
+    return Counter((b_answers[row["case_id"]], c_answers[row["case_id"]])
+                   for row in case_rows["A"] if row["label"] == "No" and row["prediction"] == "Yes")
+
+
+def one_n_outcomes(rows: list[dict]) -> dict:
+    """N이 1장인 케이스(정답 No)에서 AND로 합친 답이 가리는 이미지별 오류를 센다
+
+    rows: combine_single_image 또는 combine_per_image의 결과
+    n: N이 1장인 케이스 수
+    answered_no: 그중 합친 답이 No인(맞힌) 케이스 수
+    all_images_correct: 그중 이미지별 답 3개도 모두 맞은 케이스 수. answered_no와의 차이가 AND에 가려진 오류다
+    false_yes: 합친 답이 Yes인 케이스 수. 판정 불가(None)가 있으면 answered_no + false_yes가 n보다 작다
+    """
+    one_n = [row for row in rows if row["variant"] in ONE_N_VARIANTS]
+    answered_no = [row for row in one_n if row["prediction"] == "No"]
+    return {
+        "n": len(one_n),
+        "answered_no": len(answered_no),
+        "all_images_correct": sum(images_all_correct(row) for row in answered_no),
+        "false_yes": sum(row["prediction"] == "Yes" for row in one_n),
+    }

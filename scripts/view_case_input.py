@@ -9,14 +9,14 @@ import matplotlib.pyplot as plt
 import torch
 from matplotlib.patches import Rectangle
 
-from mivlm.config import INSTANCES_JSON, PROJECT_ROOT
+from mivlm.config import FIGURES_DIR, INSTANCES_JSON
 from mivlm.data.cases import load_cases
 from mivlm.data.image import image_path
 from mivlm.models.inference import ALL_IMAGES_QUESTION, case_messages, image_token_spans, infer, prepare_inputs
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
-OUT_DIR = PROJECT_ROOT / "outputs" / "figures" / "case_inputs"
+OUT_DIR = FIGURES_DIR / "case_inputs"
 
 
 def restore_image(patches: torch.Tensor, grid_h: int, grid_w: int, image_processor) -> torch.Tensor:

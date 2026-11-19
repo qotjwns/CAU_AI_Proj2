@@ -8,7 +8,7 @@ import json
 import pytest
 import torch
 
-from mivlm.analysis.pair_store import check_saved_pairs, save_pair_record
+from mivlm.analysis.pair_store import check_saved_pairs, load_pair_records, save_pair_record
 
 
 def _record(pair: str = "fake_pair", value: float = 1.0) -> dict:
@@ -118,3 +118,24 @@ def test_check_accepts_a_file_whose_pair_is_not_in_results_yet(tmp_path):
     check_saved_pairs(tmp_path)
 
     assert (tmp_path / "pairs" / "pair_b.pt").exists()
+
+
+# ---------------------------------------------------------- load_pair_records
+
+
+def test_load_gives_the_records_in_the_order_of_results_jsonl(tmp_path):
+    _finish(tmp_path, _record("pair_b", value=2.0))
+    _finish(tmp_path, _record("pair_a", value=1.0))
+
+    records = list(load_pair_records(tmp_path))
+
+    assert [record["pair"] for record in records] == ["pair_b", "pair_a"]  # 이름 순이 아니라 끝난 순서
+    assert torch.equal(records[0]["cases"]["PPP"]["pre_answer_hidden"], torch.full((2, 3), 2.0))
+
+
+def test_load_does_not_read_a_file_whose_pair_is_not_in_results(tmp_path):
+    # results.jsonl에 없는 pair의 파일(이름을 바꾼 직후에 끊긴 경우)은 끝난 pair가 아니므로 읽지 않는다
+    _finish(tmp_path, _record("pair_a"))
+    save_pair_record(tmp_path, _record("pair_b"))
+
+    assert [record["pair"] for record in load_pair_records(tmp_path)] == ["pair_a"]

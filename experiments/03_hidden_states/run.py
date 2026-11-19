@@ -11,15 +11,15 @@ python experiments/03_hidden_states/run.py             # 전체 400 pair, forwar
 중간에 끊기면 같은 명령으로 다시 실행한다. 이미 끝난 pair는 건너뛴다.
 실행이 끝나면 same_prefix 기준선의 측정값과, baseline(01_baseline) 결과와의 logit margin 비교를 출력한다.
 """
-import json
 from pathlib import Path
 
 from mivlm.analysis.pair_record import build_pair_record, observe_case, pair_summary
 from mivlm.analysis.pair_store import check_saved_pairs, save_pair_record
 from mivlm.config import PREDICTIONS_DIR
 from mivlm.data.cases import case_pairs, load_cases
-from mivlm.evaluation.metrics import compare_runs, read_results
+from mivlm.evaluation.metrics import compare_runs
 from mivlm.models.inference import ALL_IMAGES_QUESTION
+from mivlm.run_files import read_meta, read_results
 from mivlm.runner import parse_run_args, run_items, start_run
 
 EXPERIMENT = "03_hidden_states"
@@ -57,8 +57,9 @@ def report_baseline_margins(run_dir: Path, results: list[dict]) -> None:
 
     비교 대상은 같은 모델과 dtype으로 돌린 01_baseline의 전체 실행이다.
     이 실행은 답을 생성하지 않으므로 답을 margin의 부호로 본다 (양수면 Yes).
-    같은 조건(기기, dtype, 패키지 버전)이면 margin이 완전히 같을 것으로 기대하고, 조건이 다르면 차이가 날 수 있다.
-    그래서 두 실행의 조건을 먼저 적고, 판정은 하지 않는다.
+    기록된 조건(기기, dtype, 패키지 버전)이 같아도 margin이 완전히 같지는 않을 수 있다. 값이 촘촘한 float32에서는
+    반올림 수준의 차이가 그대로 드러난다 (baseline은 generate, 이 실행은 forward이고, GPU 기기도 다를 수 있다).
+    그래서 두 실행의 조건, 완전히 같은 케이스 수, 차이의 최댓값을 함께 적고, 판정은 하지 않는다.
     """
     baseline_dir = PREDICTIONS_DIR / "01_baseline" / run_dir.name.removesuffix("_pilot")
     if not (baseline_dir / "results.jsonl").exists():
@@ -67,8 +68,7 @@ def report_baseline_margins(run_dir: Path, results: list[dict]) -> None:
 
     print(f"\n[baseline 비교] {baseline_dir}")
     for name, directory in [("이번 실행", run_dir), ("baseline", baseline_dir)]:
-        with open(directory / "meta.json") as f:
-            meta = json.load(f)
+        meta = read_meta(directory)
         print(f"  {name}: {meta['model']['device']}, {meta['model']['dtype']}, torch {meta['environment']['torch']}, "
               f"transformers {meta['environment']['transformers']}, torchcodec {meta['preprocessing']['torchcodec']}")
 
@@ -81,7 +81,7 @@ def report_baseline_margins(run_dir: Path, results: list[dict]) -> None:
     comparison = compare_runs(rows, list(baseline_by_id.values()))
     n_exact = sum(row["logit_margin"] == baseline_by_id[row["case_id"]]["logit_margin"] for row in rows)
     print(f"  케이스 {comparison['n']}개: margin이 완전히 같음 {n_exact}개, "
-          f"차이의 최댓값 {comparison['margin_abs_diff_max']:.3f}, 답이 다름 {comparison['n_flip']}개 {comparison['flips']}")
+          f"차이의 최댓값 {comparison['margin_abs_diff_max']:.3g}, 답이 다름 {comparison['n_flip']}개 {comparison['flips']}")
     for row in rows:  # 답이 달라진 케이스. margin이 0 근처인지 볼 수 있게 두 값을 다 적는다
         baseline = baseline_by_id[row["case_id"]]
         if row["prediction"] != baseline["prediction"]:

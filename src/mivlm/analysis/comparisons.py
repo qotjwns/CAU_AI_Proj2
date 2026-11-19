@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from mivlm.analysis.pair_record import COMPARISONS
-from mivlm.evaluation.metrics import read_results
+from mivlm.analysis.pair_store import load_pair_records
 
 # 위치를 통제한 pair만 따로 볼 비교 (COMPARISONS에서의 순번, 0부터). 모두 "자리는 같고 앞의 이미지 하나만 바뀐" 비교다
 ONE_IMAGE_CHANGED = [3, 4, 6, 7, 8, 9]
@@ -28,8 +28,7 @@ def load_comparison_rows(run_dir: Path) -> list[dict]:
     토큰별 값은 여기서 평균으로 줄인다. 토큰 단위로 보려면 .pt 파일을 직접 읽는다.
     """
     rows = []
-    for result in read_results(run_dir):
-        record = torch.load(run_dir / result["file"], map_location="cpu", weights_only=True)
+    for record in load_pair_records(run_dir):
         for index, comparison in enumerate(record["comparisons"]):
             rows.append({
                 "pair": record["pair"],

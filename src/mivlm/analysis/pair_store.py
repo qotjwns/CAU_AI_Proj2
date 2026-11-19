@@ -9,10 +9,11 @@ pair 하나가 끝나는 순서: 임시 파일에 쓴다 → <pair>.pt로 이름
 그래서 results.jsonl에 적힌 pair는 완전한 파일이 있어야 하고, 어디서 끊겨도 같은 명령으로 다시 실행하면 이어진다.
 """
 import hashlib
-import json
 from pathlib import Path
 
 import torch
+
+from mivlm.run_files import read_results
 
 PAIRS_DIR = "pairs"
 
@@ -42,12 +43,9 @@ def check_saved_pairs(run_dir: Path) -> None:
     for leftover in (run_dir / PAIRS_DIR).glob("*.tmp"):
         leftover.unlink()
 
-    results_path = run_dir / "results.jsonl"
-    if not results_path.exists():
+    if not (run_dir / "results.jsonl").exists():
         return
-    with open(results_path) as f:
-        results = [json.loads(line) for line in f]
-    for result in results:
+    for result in read_results(run_dir):
         path = run_dir / result["file"]
         if not path.exists():
             raise RuntimeError(f"results.jsonl에는 {result['pair']}가 끝났다고 적혀 있는데 {path}가 없음. "
@@ -55,3 +53,13 @@ def check_saved_pairs(run_dir: Path) -> None:
         if hashlib.sha256(path.read_bytes()).hexdigest() != result["sha256"]:
             raise RuntimeError(f"{path}의 내용이 저장할 때와 다름. "
                                f"파일과 results.jsonl의 그 줄을 지우면 그 pair만 다시 실행된다")
+
+
+def load_pair_records(run_dir: Path):
+    """실행 폴더의 pair 기록을 results.jsonl에 적힌 순서대로 하나씩 읽어 준다 (기록의 내용은 build_pair_record 참고)
+
+    list로 한꺼번에 돌려주지 않고 하나씩 준다. 기록 하나가 수 MB라서 pair 400개를 모두 메모리에 올려 둘 필요가 없다.
+    쓰는 쪽: for record in load_pair_records(run_dir): ...
+    """
+    for result in read_results(run_dir):
+        yield torch.load(run_dir / result["file"], map_location="cpu", weights_only=True)

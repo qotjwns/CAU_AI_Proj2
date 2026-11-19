@@ -8,8 +8,9 @@ import pytest
 import torch
 
 from mivlm.analysis.comparisons import (
-    is_position_controlled, load_comparison_rows, median_by_layer, same_prefix_baseline,
+    ONE_IMAGE_CHANGED, is_position_controlled, load_comparison_rows, median_by_layer, same_prefix_baseline,
 )
+from mivlm.analysis.pair_record import COMPARISONS
 from mivlm.analysis.pair_store import save_pair_record
 
 
@@ -119,3 +120,23 @@ def test_baseline_is_the_largest_layer_median_of_the_same_prefix_comparison():
     ]
 
     assert same_prefix_baseline(rows) == 0.5
+
+
+# ---------------------------------------------------------- ONE_IMAGE_CHANGED
+
+
+def test_one_image_changed_lists_exactly_the_comparisons_where_one_earlier_image_differs():
+    # ONE_IMAGE_CHANGED는 순번으로 적혀 있어서, 뜻과 어긋나도 코드만 봐서는 티가 나지 않는다.
+    # 그래서 COMPARISONS에서 규칙으로 다시 찾아 같은지 본다: 두 입력에서 그 이미지의 자리가 같고,
+    # 그 앞자리 가운데 정확히 한 자리의 이미지가 다르다
+    images = {  # 변형마다 자리 1, 2, 3의 이미지 (mivlm.analysis.pair_record의 설명과 같다)
+        "PPP": ["P1", "P2", "P3"], "PPN": ["P1", "P2", "N1"], "PNP": ["P1", "N1", "P3"],
+        "NPP": ["N1", "P2", "P3"], "PNN": ["P1", "N2", "N1"], "NNN": ["N3", "N2", "N1"],
+    }
+    expected = []
+    for index, (_, _, (a_variant, a_slot), (b_variant, b_slot)) in enumerate(COMPARISONS):
+        earlier = zip(images[a_variant][:a_slot - 1], images[b_variant][:b_slot - 1])
+        if a_slot == b_slot and sum(a != b for a, b in earlier) == 1:
+            expected.append(index)
+
+    assert ONE_IMAGE_CHANGED == expected

@@ -1,21 +1,16 @@
 """
 평가 지표: 추론 결과를 케이스와 합쳐 비율과 margin을 요약한다
 """
-import json
 import statistics
 from collections import Counter
 from pathlib import Path
 
 from mivlm.data.cases import load_cases, pilot_cases
+from mivlm.run_files import read_meta, read_results
 
 BOUNDARY_MARGIN = 0.25  # |margin|이 이 값 이하면 경계 케이스로 센다. bf16 간격(0.125) 두 칸
 VARIANT_ORDER = ["PPP", "PPN", "PNP", "NPP", "PNN", "NNN"]  # 표와 그림에서 변형을 늘어놓는 순서: N 개수 순 (0, 1, 1, 1, 2, 3)
-
-
-def read_results(run_dir: Path) -> list[dict]:
-    """실행 폴더의 results.jsonl을 읽는다 (한 줄에 결과 하나)"""
-    with open(run_dir / "results.jsonl") as f:
-        return [json.loads(line) for line in f]
+ONE_N_VARIANTS = ["PPN", "PNP", "NPP"]  # N이 1장인 변형. 정답은 No이고, False-Yes가 주로 나오는 변형이다
 
 
 def join_results(items: list[dict], results: list[dict], id_key: str) -> list[dict]:
@@ -40,10 +35,8 @@ def join_results(items: list[dict], results: list[dict], id_key: str) -> list[di
 
 def load_rows(run_dir: Path) -> list[dict]:
     """A(01_baseline) 실행 폴더의 결과를 케이스와 합친 행으로 읽는다. 파일럿 실행이면 파일럿 케이스와 합친다"""
-    with open(run_dir / "meta.json") as f:
-        pilot = json.load(f)["pilot"]
     cases = load_cases()
-    return join_results(pilot_cases(cases) if pilot else cases, read_results(run_dir), "case_id")
+    return join_results(pilot_cases(cases) if read_meta(run_dir)["pilot"] else cases, read_results(run_dir), "case_id")
 
 
 def _rate(count: int, total: int) -> float | None:

@@ -10,23 +10,18 @@ python experiments/02_decomposition/plot.py qwen2.5-vl-3b
   6_hidden_image_errors.png    AND가 가리는 오류
 """
 import argparse
-from collections import Counter
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter
 
-from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
-from mivlm.data.cases import load_cases
-from mivlm.evaluation.decomposition import (
-    combine_per_image, combine_single_image, images_all_correct, load_per_image_rows, load_single_image_rows,
-)
-from mivlm.evaluation.metrics import VARIANT_ORDER, load_rows, summarize, summarize_by
+from mivlm.config import FIGURES_DIR
+from mivlm.evaluation.decomposition import a_false_yes_answers, load_case_rows, main_metrics, one_n_outcomes
+from mivlm.evaluation.metrics import VARIANT_ORDER, summarize, summarize_by
 from mivlm.plotting import AQUA, BLUE, INK, INK_SECONDARY, MUTED, ORANGE, STYLE, SURFACE, VIOLET, save, set_title
 
 EXPERIMENT = "02_decomposition"
-ONE_N_VARIANTS = ["PPN", "PNP", "NPP"]  # N이 1장인 변형
 
 # 실험마다 색을 하나 정해 모든 그림에서 같은 색을 쓴다
 COLORS = {"A": BLUE, "B": ORANGE, "C": AQUA}
@@ -57,17 +52,11 @@ def draw_segments(ax, y: float, counts: list[int], styles: list[tuple[str, str]]
 def plot_main_metrics(case_rows: dict[str, list[dict]], run: str, out_path: Path) -> None:
     """표 1: 전체 정확도, N이 1장인 변형의 False-Yes, PPP 정확도를 A, B, C끼리 비교한다"""
     # 그릴 숫자: 지표마다 A, B, C 순서의 값 3개
-    accuracy, one_n_false_yes, ppp_accuracy = [], [], []
-    for rows in case_rows.values():
-        one_n_rows = [row for row in rows if row["variant"] in ONE_N_VARIANTS]
-        ppp_rows = [row for row in rows if row["variant"] == "PPP"]
-        accuracy.append(summarize(rows)["accuracy"])
-        one_n_false_yes.append(summarize(one_n_rows)["false_yes_rate"])
-        ppp_accuracy.append(summarize(ppp_rows)["accuracy"])
+    metrics = [main_metrics(rows) for rows in case_rows.values()]
     panels = {
-        "Accuracy, all cases\n(higher is better)": accuracy,
-        "False-Yes, variants with one N\n(lower is better)": one_n_false_yes,
-        "Accuracy, PPP\n(higher is better)": ppp_accuracy,
+        "Accuracy, all cases\n(higher is better)": [values["accuracy"] for values in metrics],
+        "False-Yes, variants with one N\n(lower is better)": [values["one_n_false_yes_rate"] for values in metrics],
+        "Accuracy, PPP\n(higher is better)": [values["ppp_accuracy"] for values in metrics],
     }
 
     # 그리기: 지표마다 칸 하나. 높을수록 좋은 지표와 낮을수록 좋은 지표를 한 칸에 섞지 않는다
@@ -114,10 +103,8 @@ def plot_yes_rate_by_variant(case_rows: dict[str, list[dict]], run: str, out_pat
 def plot_a_false_yes_breakdown(case_rows: dict[str, list[dict]], run: str, out_path: Path) -> None:
     """표 4: A가 False-Yes인 케이스에서 B와 C(AND로 합친 답)는 무엇이라 답했는가"""
     # 그릴 숫자: (B의 답, C의 답)마다 케이스 수
-    b_answers = {row["case_id"]: row["prediction"] for row in case_rows["B"]}
-    c_answers = {row["case_id"]: row["prediction"] for row in case_rows["C"]}
-    a_false_yes = [row for row in case_rows["A"] if row["label"] == "No" and row["prediction"] == "Yes"]
-    pair_counts = Counter((b_answers[row["case_id"]], c_answers[row["case_id"]]) for row in a_false_yes)
+    pair_counts = a_false_yes_answers(case_rows)
+    n_false_yes = sum(pair_counts.values())
     # 구간: (B의 답, C의 답), 이름, (채우는 색, 글자색)
     parts = [
         (("No", "No"), "B and C both answer No (correct)", (MUTED, INK)),
@@ -130,14 +117,14 @@ def plot_a_false_yes_breakdown(case_rows: dict[str, list[dict]], run: str, out_p
 
     # 그리기: 막대 하나를 네 구간으로. 구간별 개수는 범례에 적는다
     fig, ax = plt.subplots(figsize=(9, 0.55))
-    draw_segments(ax, 0, counts, styles, len(a_false_yes))
+    draw_segments(ax, 0, counts, styles, n_false_yes)
     ax.set_xlim(0, 1)
     ax.set_ylim(-0.25, 0.4)  # 막대(높이 0.5)와 부제목 사이를 조금 띄운다
     ax.axis("off")
     handles = [Patch(color=color, label=f"{name}: {count:,}") for (_, name, (color, _)), count in zip(parts, counts)]
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, 0), ncols=2, frameon=False)
     set_title(ax, "A's False-Yes cases: what do B and C answer?",
-              f"{run}, {len(a_false_yes):,} cases where A answers Yes but the correct answer is No")
+              f"{run}, {n_false_yes:,} cases where A answers Yes but the correct answer is No")
     save(fig, out_path)
 
 
@@ -186,11 +173,9 @@ def plot_hidden_image_errors(case_rows: dict[str, list[dict]], run: str, out_pat
 
     fig, ax = plt.subplots(figsize=(9, 1.4))
     for y, name in enumerate(["B", "C"]):
-        one_n_rows = [row for row in case_rows[name] if row["variant"] in ONE_N_VARIANTS]
-        answered_no = [row for row in one_n_rows if row["prediction"] == "No"]
-        n_all_correct = sum(images_all_correct(row) for row in answered_no)
-        n_false_yes = sum(row["prediction"] == "Yes" for row in one_n_rows)
-        draw_segments(ax, y, [n_all_correct, len(answered_no) - n_all_correct, n_false_yes], styles, len(one_n_rows))
+        outcomes = one_n_outcomes(case_rows[name])
+        hidden = outcomes["answered_no"] - outcomes["all_images_correct"]  # 합친 답은 맞았지만 이미지별 답이 틀린 케이스
+        draw_segments(ax, y, [outcomes["all_images_correct"], hidden, outcomes["false_yes"]], styles, outcomes["n"])
     ax.set_yticks([0, 1], ["B", "C"])
     ax.invert_yaxis()  # B를 위에
     ax.set_xlim(0, 1)
@@ -200,7 +185,7 @@ def plot_hidden_image_errors(case_rows: dict[str, list[dict]], run: str, out_pat
     handles = [Patch(color=color, label=name) for name, (color, _) in zip(names, styles)]
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, -0.2), frameon=False)
     set_title(ax, "Image-level errors hidden by AND",
-              f"{run}, {len(one_n_rows):,} cases with one N image (PPN, PNP, NPP), correct answer is No")
+              f"{run}, {outcomes['n']:,} cases with one N image (PPN, PNP, NPP), correct answer is No")
     save(fig, out_path)
 
 
@@ -209,19 +194,12 @@ def main() -> None:
     parser.add_argument("run", help="실행 폴더 이름. 예: qwen2.5-vl-3b")
     args = parser.parse_args()
 
-    # 이미지별 답 (B: 320개, C: 7,200개)
-    b_image_rows = load_single_image_rows(PREDICTIONS_DIR / EXPERIMENT / "b_single_image" / args.run)
-    c_image_rows = load_per_image_rows(PREDICTIONS_DIR / EXPERIMENT / "c_per_image_answers" / args.run)
-    # 케이스 단위의 답 (각 2,400개). B와 C는 이미지별 답을 AND로 합친 것
-    cases = load_cases()
-    case_rows = {
-        "A": load_rows(PREDICTIONS_DIR / "01_baseline" / args.run),
-        "B": combine_single_image(cases, b_image_rows),
-        "C": combine_per_image(cases, c_image_rows),
-    }
+    # case_rows: 케이스 단위의 답 (A, B, C 각 2,400개. B와 C는 이미지별 답을 AND로 합친 것)
+    # b_image_rows, c_image_rows: 이미지별 답 (B: 320개, C: 7,200개)
+    case_rows, b_image_rows, c_image_rows = load_case_rows(args.run)
 
     plt.rcParams.update(STYLE)
-    out_dir = PROJECT_ROOT / "outputs" / "figures" / EXPERIMENT / args.run
+    out_dir = FIGURES_DIR / EXPERIMENT / args.run
     out_dir.mkdir(parents=True, exist_ok=True)
     plot_main_metrics(case_rows, args.run, out_dir / "1_main_metrics.png")
     plot_yes_rate_by_variant(case_rows, args.run, out_dir / "2_yes_rate_by_variant.png")

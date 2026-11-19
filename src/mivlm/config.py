@@ -18,6 +18,8 @@ PAIRS_JSON = CASES_DIR / "pairs.json"
 CASES_JSONL = CASES_DIR / "cases.jsonl"
 
 PREDICTIONS_DIR = PROJECT_ROOT / "outputs" / "predictions"  # <실험>/<실행 이름>/{meta.json, results.jsonl}
+FIGURES_DIR = PROJECT_ROOT / "outputs" / "figures"  # <실험>/<실행 이름>/<그림>.png
+TABLES_DIR = PROJECT_ROOT / "outputs" / "tables"  # <실험>/<표>.csv
 
 
 def load_models_config() -> dict[str, str]:

@@ -12,8 +12,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter
 
-from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
-from mivlm.evaluation.metrics import BOUNDARY_MARGIN, VARIANT_ORDER, load_rows, summarize_by
+from mivlm.config import FIGURES_DIR, PREDICTIONS_DIR
+from mivlm.evaluation.metrics import BOUNDARY_MARGIN, ONE_N_VARIANTS, VARIANT_ORDER, load_rows, summarize_by
 from mivlm.plotting import AXIS, BLUE, BLUE_RAMP, GRID, INK, INK_SECONDARY, MUTED, STYLE, SURFACE, save, set_title
 
 EXPERIMENT = "01_baseline"
@@ -74,7 +74,7 @@ def plot_yes_rate_by_class(rows: list[dict], run: str, out_path: Path) -> None:
     by_class = {name: summarize_by([row for row in rows if row["object"] == name], "variant")
                 for name in summarize_by(rows, "object")}
     # N이 1장인 세 변형의 Yes 비율이 높은 클래스를 위에 둔다
-    names = sorted(by_class, key=lambda name: -sum(by_class[name][variant]["yes_rate"] for variant in ["PPN", "PNP", "NPP"]))
+    names = sorted(by_class, key=lambda name: -sum(by_class[name][variant]["yes_rate"] for variant in ONE_N_VARIANTS))
     matrix = [[by_class[name][variant]["yes_rate"] for variant in VARIANT_ORDER] for name in names]
 
     fig, ax = plt.subplots(figsize=(6.2, 7.5))
@@ -136,7 +136,7 @@ def main() -> None:
 
     plt.rcParams.update(STYLE)
     rows = load_rows(PREDICTIONS_DIR / EXPERIMENT / args.run)
-    out_dir = PROJECT_ROOT / "outputs" / "figures" / EXPERIMENT / args.run
+    out_dir = FIGURES_DIR / EXPERIMENT / args.run
     out_dir.mkdir(parents=True, exist_ok=True)
 
     plot_yes_rate_by_variant(rows, args.run, out_dir / "yes_rate_by_variant.png")

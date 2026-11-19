@@ -2,7 +2,10 @@
 src/mivlm/evaluation/decomposition.py 단위 테스트
 pytest tests/unit/test_decomposition.py -v
 """
-from mivlm.evaluation.decomposition import and_answers, combine_per_image, combine_single_image, images_all_correct
+from mivlm.evaluation.decomposition import (
+    a_false_yes_answers, and_answers, combine_per_image, combine_single_image, images_all_correct, main_metrics,
+    one_n_outcomes,
+)
 
 DOG, CAT = 18, 17
 # PPN 케이스: 자리 1, 2는 P(이미지 11, 12), 자리 3은 N(이미지 21)
@@ -112,3 +115,50 @@ def test_images_all_correct_compares_by_slot_not_by_count():
 
 def test_images_all_correct_is_false_with_an_unparsed_answer():
     assert not images_all_correct({"variant": "PPP", "image_predictions": ["Yes", None, "Yes"]})
+
+
+# ------------------------------------- main_metrics, a_false_yes_answers, one_n_outcomes
+
+
+def _case_row(variant, prediction, case_id="case", image_predictions=None):
+    """케이스 단위의 행에서 세는 데 쓰이는 필드만 담은 행. 정답은 PPP만 Yes다"""
+    return {"case_id": case_id, "variant": variant, "label": "Yes" if variant == "PPP" else "No",
+            "prediction": prediction, "logit_margin": 1.0 if prediction == "Yes" else -1.0,
+            "image_predictions": image_predictions}
+
+
+def test_main_metrics_uses_all_cases_then_one_n_variants_then_ppp():
+    rows = [
+        _case_row("PPP", "Yes"), _case_row("PPP", "No"),    # PPP 정확도 1/2
+        _case_row("PPN", "Yes"), _case_row("PNP", "No"), _case_row("NPP", "No"), _case_row("NPP", "No"),  # False-Yes 1/4
+        _case_row("NNN", "Yes"), _case_row("PNN", "No"),    # N이 1장이 아니라서 False-Yes rate에는 들어가지 않는다
+    ]
+
+    # 맞힌 케이스: PPP 1 + N 1장 3 + PNN 1 = 5개
+    assert main_metrics(rows) == {"accuracy": 5 / 8, "one_n_false_yes_rate": 1 / 4, "ppp_accuracy": 1 / 2}
+
+
+def test_a_false_yes_answers_counts_the_b_and_c_answers_of_those_cases_only():
+    case_rows = {
+        "A": [_case_row("PPN", "Yes", "c1"), _case_row("PNP", "Yes", "c2"), _case_row("NPP", "Yes", "c3"),
+              _case_row("PPN", "No", "c4"),      # A가 맞혔으므로 세지 않는다
+              _case_row("PPP", "Yes", "c5")],    # 정답이 Yes이므로 False-Yes가 아니다
+        "B": [_case_row("PPN", "No", "c1"), _case_row("PNP", "No", "c2"), _case_row("NPP", "No", "c3"),
+              _case_row("PPN", "No", "c4"), _case_row("PPP", "Yes", "c5")],
+        "C": [_case_row("PPN", "No", "c1"), _case_row("PNP", "Yes", "c2"), _case_row("NPP", None, "c3"),
+              _case_row("PPN", "No", "c4"), _case_row("PPP", "Yes", "c5")],
+    }
+
+    assert a_false_yes_answers(case_rows) == {("No", "No"): 1, ("No", "Yes"): 1, ("No", None): 1}
+
+
+def test_one_n_outcomes_separates_the_image_errors_that_and_hides():
+    rows = [
+        _case_row("PPN", "No", image_predictions=["Yes", "Yes", "No"]),    # 합친 답도 이미지별 답도 맞음
+        _case_row("PNP", "No", image_predictions=["No", "No", "Yes"]),     # 합친 답은 맞지만 자리 1의 P를 놓침
+        _case_row("NPP", "Yes", image_predictions=["Yes", "Yes", "Yes"]),  # False-Yes
+        _case_row("NPP", None, image_predictions=["Yes", None, "Yes"]),    # 판정 불가: 어느 쪽에도 세지 않는다
+        _case_row("PPP", "No", image_predictions=["Yes", "Yes", "No"]),    # N이 1장인 변형이 아니다
+    ]
+
+    assert one_n_outcomes(rows) == {"n": 4, "answered_no": 2, "all_images_correct": 1, "false_yes": 1}
