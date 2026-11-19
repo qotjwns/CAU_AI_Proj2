@@ -69,3 +69,15 @@ def per_image_queries(cases: list[dict]) -> list[dict]:
                 "label": "Yes" if letter == "P" else "No",
             })
     return queries
+
+
+def case_pairs(cases: list[dict]) -> list[dict]:
+    """케이스를 pair별로 묶는다 (pair도, pair 안의 변형도 처음 나온 순서 유지)
+
+    반환: [{"pair": "group_01_person_1", "cases": {"PPP": 케이스, "PPN": 케이스, ...}}, ...]
+    pair 이름은 group_id와 pair_id를 이은 것이고, case_id에서 변형 이름을 뗀 것과 같다.
+    """
+    pairs = {}  # pair 이름 -> {변형: 케이스}
+    for case in cases:
+        pairs.setdefault(f"{case['group_id']}_{case['pair_id']}", {})[case["variant"]] = case
+    return [{"pair": pair, "cases": variants} for pair, variants in pairs.items()]

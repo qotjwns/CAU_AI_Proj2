@@ -2,7 +2,7 @@
 src/mivlm/data/cases.py 단위 테스트
 pytest tests/unit/test_cases.py -v
 """
-from mivlm.data.cases import per_image_queries, pilot_cases, single_image_items
+from mivlm.data.cases import case_pairs, per_image_queries, pilot_cases, single_image_items
 
 VARIANTS = ["PPP", "PPN", "PNN", "NNN", "NPP", "PNP"]
 CLASSES = ["person", "dining table", "chair", "couch", "cat", "train", "bus"]
@@ -70,3 +70,14 @@ def test_per_image_queries_one_per_slot_with_slot_label():
     # 세 질문 모두 같은 이미지 3장을 같은 순서로 넣는다
     assert all(query["image_ids"] == [11, 21, 13] for query in queries)
     assert all(query["case_id"] == "group_01_dog_1_PNP" for query in queries)
+
+
+def test_case_pairs_group_six_variants_per_pair_in_file_order():
+    pairs = case_pairs(_make_cases())
+
+    assert len(pairs) == 7 * 2 * 2  # 클래스 7개 x group 2개 x pair 2개
+    assert [item["pair"] for item in pairs[:3]] == ["group_01_person_1", "group_01_person_2", "group_02_person_1"]
+    for item in pairs:
+        assert list(item["cases"]) == VARIANTS
+        for variant, case in item["cases"].items():
+            assert case["case_id"] == f"{item['pair']}_{variant}"
