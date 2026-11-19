@@ -1,10 +1,13 @@
 """
-실제 Qwen2.5-VL-3B로 pair 하나의 기록을 만들어 검사 (forward 6번 + 생성 6번)
+실제 Qwen2.5-VL로 pair 하나의 기록을 만들어 검사 (forward 6번 + 생성 6번, 기본 3B)
 pytest tests/integration/test_qwen_pair_record.py -v -s
+MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_qwen_pair_record.py -v -s     # 다른 모델로
 
 pair는 group_05_cat_4를 쓴다. P2와 N1의 토큰 수가 같아서(391개) 위치가 통제되는 비교가 들어 있다.
-"완전히 같다"는 기준은 이 기기(Mac, MPS, bf16)에서 관측한 것이다. 다른 기기에서 실패하면 출력된 값을 먼저 본다.
+"완전히 같다"는 기준은 3B를 Mac(MPS, bf16)에서 돌려 관측한 것이다. 다른 기기나 모델에서 실패하면 출력된 값을 먼저 본다.
 """
+import os
+
 import pytest
 import torch
 from huggingface_hub import try_to_load_from_cache
@@ -16,14 +19,15 @@ from mivlm.data.cases import case_pairs, load_cases
 from mivlm.models.inference import case_messages, infer, yes_no_token_ids
 from mivlm.models.loading import load_model
 
-MODEL_NAME = "qwen2.5-vl-3b"
+# 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
+MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
 PAIR = "group_05_cat_4"
 
 pytestmark = pytest.mark.skipif(
     not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
     or not CASES_JSONL.exists()
     or not COCO_IMAGE_DIR.exists(),
-    reason="모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py qwen2.5-vl-3b, "
+    reason=f"모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py {MODEL_NAME}, "
            "scripts/download_coco.py, build_cases.py를 먼저 실행",
 )
 
@@ -118,13 +122,14 @@ def test_logits_match_infer_for_every_case(loaded, cases, record):
 def test_pre_answer_hidden_is_at_the_position_that_predicts_the_first_answer_token(loaded, cases, record):
     model, processor = loaded
     yes_id, no_id = yes_no_token_ids(processor.tokenizer)
+    text_config = model.config.text_config  # 모델 설정에 적힌 층 수와 벡터 크기 (3B는 36, 2048)
 
     for variant, case in cases.items():
         saved = record["cases"][variant]
         # 입력은 assistant 머리말로 끝난다. 그 마지막 토큰 위치가 첫 답변 토큰을 예측하는 자리다
         prompt = processor.apply_chat_template(case_messages(case), tokenize=False, add_generation_prompt=True)
         assert prompt.endswith("<|im_start|>assistant\n"), variant
-        assert saved["pre_answer_hidden"].shape == (37, 2048), variant
+        assert saved["pre_answer_hidden"].shape == (text_config.num_hidden_layers + 1, text_config.hidden_size), variant
 
         # 마지막 항목(최종 norm이 적용된 벡터)을 lm_head에 넣으면 저장된 logit이 나와야 한다.
         # 벡터 하나만 따로 계산하므로 forward 때와 반올림이 다를 수 있어, bf16 간격(0.125) 두 칸까지 허용한다.
@@ -144,7 +149,7 @@ def test_saved_file_is_small_and_reads_back(tmp_path, record):
     megabytes = path.stat().st_size / 1e6
     print(f"\n{saved['file']}: {megabytes:.2f} MB")
 
-    # 케이스 6개의 pre_answer_hidden 약 1.8 MB + 비교 12개의 토큰별 유사도 약 0.7 MB.
+    # 3B 기준으로 케이스 6개의 pre_answer_hidden 약 1.8 MB + 비교 12개의 토큰별 유사도 약 0.7 MB. 7B는 약 3 MB로 예상한다.
     # 전체 hidden state(케이스당 수백 MB)가 딸려 들어가면 이 크기를 크게 넘는다
     assert megabytes < 5
 

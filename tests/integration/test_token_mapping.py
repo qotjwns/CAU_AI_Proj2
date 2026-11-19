@@ -1,11 +1,14 @@
 """
-실제 Qwen2.5-VL-3B processor로 image_token_spans의 구간이 그 자리의 이미지를 가리키는지 검사
+실제 Qwen2.5-VL processor로 image_token_spans의 구간이 그 자리의 이미지를 가리키는지 검사 (기본 3B)
 pytest tests/integration/test_token_mapping.py -v
+MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_token_mapping.py -v     # 다른 모델로
 
 모델 가중치는 로딩하지 않고 processor만 쓴다.
 대상: 클래스마다 첫 pair(group_01의 pair 1)의 NPP, PNP, PPN. 같은 N 이미지가 자리 1, 2, 3으로 옮겨 간다.
 구간 길이만으로는 어느 이미지인지 알 수 없으므로(크기가 같으면 토큰 수도 같다) 내용, 길이, 위치를 따로 맞춰 본다.
 """
+import os
+
 import pytest
 import torch
 from huggingface_hub import try_to_load_from_cache
@@ -15,7 +18,8 @@ from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR, load_models_config
 from mivlm.data.cases import load_cases
 from mivlm.models.inference import case_messages, image_token_spans, prepare_inputs, single_image_messages
 
-MODEL_NAME = "qwen2.5-vl-3b"
+# 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
+MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
 N_MOVES = ["NPP", "PNP", "PPN"]  # N이 자리 1 → 2 → 3으로 옮겨 가는 순서. 목록에서의 순번이 곧 N의 자리다
 FIRST_IMAGE_TOKEN = 15  # 앞에 system 블록 11 + user 머리 3 + <|vision_start|> 1
 TOKENS_BETWEEN_IMAGES = 2  # <|vision_end|>, <|vision_start|>
@@ -24,7 +28,7 @@ pytestmark = pytest.mark.skipif(
     not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
     or not CASES_JSONL.exists()
     or not COCO_IMAGE_DIR.exists(),
-    reason="모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py qwen2.5-vl-3b, "
+    reason=f"모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py {MODEL_NAME}, "
            "scripts/download_coco.py, build_cases.py를 먼저 실행",
 )
 
@@ -136,7 +140,8 @@ def test_span_positions_follow_from_lengths(processor, prepared):
 
 
 def test_known_spans(prepared):
-    # 기준점: scripts/view_case_input.py로 실제 확인한 값. cases.jsonl을 다시 만들어 이 케이스의 이미지가 바뀌면 달라진다
+    # 기준점: 3B에서 scripts/view_case_input.py로 실제 확인한 값. cases.jsonl을 다시 만들어 이 케이스의 이미지가 바뀌면 달라진다.
+    # 다른 모델에서 이 테스트만 실패하면, 그 모델의 processor가 같은 이미지를 다른 크기로 줄인다는 뜻이다
     (item,) = [item for item in prepared if item["case"]["case_id"] == "group_01_person_1_PPN"]
 
     assert item["spans"] == [(15, 383), (385, 845), (847, 1192)]

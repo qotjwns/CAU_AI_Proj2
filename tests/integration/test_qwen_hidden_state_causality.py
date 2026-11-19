@@ -1,6 +1,7 @@
 """
-실제 Qwen2.5-VL-3B에서 "앞부분이 같으면 그 앞부분의 hidden state도 같다"를 검사 (forward 9번)
+실제 Qwen2.5-VL에서 "앞부분이 같으면 그 앞부분의 hidden state도 같다"를 검사 (forward 9번, 기본 3B)
 pytest tests/integration/test_qwen_hidden_state_causality.py -v -s
+MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_qwen_hidden_state_causality.py -v -s     # 다른 모델로
 
 모델은 각 토큰에서 앞쪽 토큰만 보므로, 두 입력이 어느 위치까지 같으면 그 위치까지의 벡터는 뒤가 달라도 같아야 한다.
 이것이 성립하면 이미지 토큰 구간, 추출 코드, "이미지 위치의 벡터는 질문을 모른다"는 전제가 함께 확인된다.
@@ -11,6 +12,8 @@ pytest tests/integration/test_qwen_hidden_state_causality.py -v -s
 
 group_01_person pair 1의 이미지 P1, P2, P3, N1을 쓴다. 모든 비교의 차이를 출력하므로 -s를 붙여서 본다.
 """
+import os
+
 import pytest
 import torch
 from huggingface_hub import try_to_load_from_cache
@@ -23,14 +26,15 @@ from mivlm.models.inference import (
 )
 from mivlm.models.loading import load_model
 
-MODEL_NAME = "qwen2.5-vl-3b"
+# 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
+MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
 PAIR = ("group_01_person", 1)  # (group_id, pair_id)
 
 pytestmark = pytest.mark.skipif(
     not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
     or not CASES_JSONL.exists()
     or not COCO_IMAGE_DIR.exists(),
-    reason="모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py qwen2.5-vl-3b, "
+    reason=f"모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py {MODEL_NAME}, "
            "scripts/download_coco.py, build_cases.py를 먼저 실행",
 )
 
@@ -48,7 +52,7 @@ def runs(loaded):
     PPN again: PPN과 같은 입력을 한 번 더
     C: PPN과 같은 이미지 + "첫 번째 이미지에 있는가" (실험 C)
     P1 alone, P2 alone, N1 alone: 이미지 1장 + "이 이미지에 있는가" (실험 B)
-    hidden: shape (37, 토큰 수, 2048)
+    hidden: shape (층 수 + 1, 토큰 수, 벡터 크기). 3B는 (37, 토큰 수, 2048)
     """
     model, processor = loaded
     cases = {case["variant"]: case for case in load_cases() if (case["group_id"], case["pair_id"]) == PAIR}
