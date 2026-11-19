@@ -2,11 +2,13 @@
 src/mivlm/models/inference.py 단위 테스트 (모델은 로딩하지 않는다)
 pytest tests/unit/test_inference.py -v
 """
+import pytest
 import torch
 
 from mivlm.data.image import image_path
 from mivlm.models.inference import (
     build_messages, case_messages, image_token_spans, parse_yes_no, per_image_messages, single_image_messages,
+    yes_no_token_ids,
 )
 
 PAD = 9  # 테스트용 가짜 이미지 토큰 id
@@ -130,3 +132,25 @@ def test_spans_empty_without_image_tokens():
 
 def test_spans_at_both_ends_of_the_input():
     assert image_token_spans(torch.tensor([PAD, PAD, 1, PAD]), PAD) == [(0, 2), (3, 4)]
+
+
+# ----------------------------------------------------------- yes_no_token_ids
+
+
+class FakeTokenizer:
+    """글자마다 정해 둔 토큰 id 목록을 돌려주는 가짜 tokenizer"""
+
+    def __init__(self, ids_by_text: dict[str, list[int]]):
+        self.ids_by_text = ids_by_text
+
+    def encode(self, text: str, add_special_tokens: bool) -> list[int]:
+        return self.ids_by_text[text]
+
+
+def test_yes_no_token_ids_come_in_yes_no_order():
+    assert yes_no_token_ids(FakeTokenizer({"Yes": [7], "No": [3]})) == (7, 3)
+
+
+def test_yes_or_no_split_into_several_tokens_is_an_error():
+    with pytest.raises(ValueError):
+        yes_no_token_ids(FakeTokenizer({"Yes": [7, 8], "No": [3]}))

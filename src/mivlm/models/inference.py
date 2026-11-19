@@ -87,6 +87,13 @@ def parse_yes_no(text: str) -> str | None:
     return None
 
 
+def yes_no_token_ids(tokenizer) -> tuple[int, int]:
+    """"Yes"와 "No"의 토큰 id를 (yes_id, no_id)로 돌려준다. 둘 중 하나라도 토큰 하나가 아니면 에러가 난다"""
+    (yes_id,) = tokenizer.encode("Yes", add_special_tokens=False)
+    (no_id,) = tokenizer.encode("No", add_special_tokens=False)
+    return yes_id, no_id
+
+
 def infer(model, processor, messages: list[dict]) -> dict:
     """메시지 하나를 추론한다 (batch 1, greedy, 최대 8토큰)
 
@@ -94,9 +101,7 @@ def infer(model, processor, messages: list[dict]) -> dict:
     logit_margin: yes_logit - no_logit. 양수면 첫 토큰으로 Yes가 No보다 그럴듯하다는 뜻
     """
     tokenizer = processor.tokenizer
-    # "Yes", "No"가 토큰 하나가 아니면 여기서 에러가 난다
-    (yes_id,) = tokenizer.encode("Yes", add_special_tokens=False)
-    (no_id,) = tokenizer.encode("No", add_special_tokens=False)
+    yes_id, no_id = yes_no_token_ids(tokenizer)
 
     inputs = prepare_inputs(processor, messages).to(model.device)
     input_length = inputs["input_ids"].shape[1]
