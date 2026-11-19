@@ -20,8 +20,8 @@ from mivlm.analysis.comparisons import (
 )
 from mivlm.analysis.hidden_states import SAME_WITHIN
 from mivlm.analysis.pair_record import COMPARISONS
-from mivlm.config import PREDICTIONS_DIR, PROJECT_ROOT
-from mivlm.plotting import AQUA, BLUE, INK_SECONDARY, MUTED, ORANGE, STYLE, save, set_title
+from mivlm.config import FIGURES_DIR, PREDICTIONS_DIR
+from mivlm.plotting import AQUA, BLUE, MUTED, ORANGE, STYLE, figure_title, save, set_title, style_layer_axis
 
 EXPERIMENT = "03_hidden_states"
 Y_LABEL = "cosine similarity, token by token"
@@ -43,32 +43,6 @@ def draw_median(ax, rows: list[dict], metric: str, color: str, label: str, band:
     ax.plot(layers, median_by_layer(rows, metric), color=color, linewidth=2, label=label, **line_style)
 
 
-def style_layer_axis(ax, y_min: float, y_label: str | None = Y_LABEL, note: bool = True) -> None:
-    """가로축은 층, 세로축은 유사도. 마지막 항목은 최종 norm이 적용된 값이라 세로선으로 구분한다
-
-    note: 세로선 옆에 설명을 적을지. 칸이 여러 개면 한 칸에만 적는다
-    """
-    n_entries = len(ax.lines[0].get_xdata())
-    ax.set_xlim(0, n_entries - 1)
-    ax.set_ylim(y_min, 1.004)
-    ax.set_xlabel("layer (0 = before the first layer)")
-    if y_label:
-        ax.set_ylabel(y_label)
-    ax.grid(axis="y")
-    ax.axvline(n_entries - 1.5, color=MUTED, linewidth=0.8, linestyle=":")
-    if note:
-        ax.text(n_entries - 1.7, y_min + 0.004, "last entry:\nafter final norm", ha="right", va="bottom", color=MUTED,
-                fontsize=8)
-
-
-def figure_title(fig, title: str, subtitle: str) -> None:
-    """칸이 여러 개인 그림의 제목과 부제목을 첫 칸의 왼쪽 끝에 맞춰 그림 위에 단다 (칸 이름은 칸마다 따로 단다)"""
-    left = fig.axes[0].get_position().x0
-    height = fig.get_figheight()
-    fig.text(left, 0.88 + 0.72 / height, title, fontsize=13, fontweight="bold", va="bottom")
-    fig.text(left, 0.88 + 0.46 / height, subtitle, fontsize=9, color=INK_SECONDARY, va="bottom")
-
-
 def plot_slot_change(by_index: dict, subtitle: str, out_path: Path) -> None:
     """표 1의 열 1~3과 12: 같은 N1을 다른 자리에 놓았을 때 그 사진의 토큰 벡터가 얼마나 달라지는가"""
     fig, ax = plt.subplots(figsize=(8.5, 4.8))
@@ -76,7 +50,7 @@ def plot_slot_change(by_index: dict, subtitle: str, out_path: Path) -> None:
     draw_median(ax, by_index[1], "token_cosine", ORANGE, "slot 1 vs slot 3")
     draw_median(ax, by_index[2], "token_cosine", AQUA, "slot 2 vs slot 3")
     draw_median(ax, by_index[11], "token_cosine", MUTED, "nothing changed (reference)", band=False, linestyle="--")
-    style_layer_axis(ax, y_min=0.86)
+    style_layer_axis(ax, y_min=0.86, y_label=Y_LABEL)
     ax.legend(loc="lower left", frameon=False, fontsize=9)
     set_title(ax, "The same image, moved to another slot", subtitle)
     save(fig, out_path)
@@ -148,7 +122,7 @@ def main() -> None:
     subtitle = f"{medians}. Band = middle 50% of pairs"
 
     plt.rcParams.update(STYLE)
-    out_dir = PROJECT_ROOT / "outputs" / "figures" / EXPERIMENT / args.run
+    out_dir = FIGURES_DIR / EXPERIMENT / args.run
     out_dir.mkdir(parents=True, exist_ok=True)
     plot_slot_change(by_index, subtitle, out_dir / "1_slot_change.png")
     plot_earlier_image_changed(by_index, subtitle, out_dir / "2_earlier_image_changed.png")

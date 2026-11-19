@@ -42,6 +42,34 @@ def set_title(ax, title: str, subtitle: str) -> None:
     ax.text(0, 1.03, subtitle, transform=ax.transAxes, color=INK_SECONDARY, fontsize=9)
 
 
+def figure_title(fig, title: str, subtitle: str) -> None:
+    """칸이 여러 개인 그림의 제목과 부제목을 첫 칸의 왼쪽 끝에 맞춰 그림 위에 단다 (칸 이름은 칸마다 따로 단다)"""
+    left = fig.axes[0].get_position().x0
+    height = fig.get_figheight()
+    fig.text(left, 0.88 + 0.72 / height, title, fontsize=13, fontweight="bold", va="bottom")
+    fig.text(left, 0.88 + 0.46 / height, subtitle, fontsize=9, color=INK_SECONDARY, va="bottom")
+
+
+def style_layer_axis(ax, y_min: float, y_label: str | None, note: bool = True) -> None:
+    """층이 가로축인 칸의 축을 꾸민다. 마지막 항목은 최종 norm이 적용된 값이라 세로선으로 구분한다
+
+    선을 먼저 그린 뒤에 호출한다 (층 수를 첫 선에서 읽는다). 세로축은 y_min부터 1까지다.
+    y_label: 세로축 이름. None이면 달지 않는다 (세로축을 같이 쓰는 칸)
+    note: 세로선 옆에 설명을 적을지. 칸이 여러 개면 한 칸에만 적는다
+    """
+    n_entries = len(ax.lines[0].get_xdata())
+    ax.set_xlim(0, n_entries - 1)
+    ax.set_ylim(y_min, 1.004)
+    ax.set_xlabel("layer (0 = before the first layer)")
+    if y_label:
+        ax.set_ylabel(y_label)
+    ax.grid(axis="y")
+    ax.axvline(n_entries - 1.5, color=MUTED, linewidth=0.8, linestyle=":")
+    if note:
+        ax.text(n_entries - 1.7, y_min + 0.004, "last entry:\nafter final norm", ha="right", va="bottom", color=MUTED,
+                fontsize=8)
+
+
 def save(fig, out_path: Path) -> None:
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
