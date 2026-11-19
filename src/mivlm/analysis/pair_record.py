@@ -76,7 +76,8 @@ def observe_case(model, processor, case: dict) -> dict:
     forward 전에 이미지 수, 토큰 구간, 격자, position id가 서로 맞는지 확인한다.
     hidden_states가 케이스 하나에 수백 MB이므로, 돌려받은 observation은 비교가 끝나면 버린다.
     """
-    inputs = prepare_inputs(processor, case_messages(case))
+    # device로는 여기서 한 번만 옮긴다. position_ids와 extract_hidden_states는 받은 inputs를 그대로 쓴다
+    inputs = prepare_inputs(processor, case_messages(case)).to(model.device)
     token_spans = image_token_spans(inputs["input_ids"][0], processor.image_token_id)
     image_grid_thw = inputs["image_grid_thw"].tolist()
     ids = position_ids(model, inputs)

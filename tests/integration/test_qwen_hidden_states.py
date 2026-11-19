@@ -13,7 +13,7 @@ from huggingface_hub import try_to_load_from_cache
 from mivlm.analysis.hidden_states import extract_hidden_states, position_ids
 from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR, load_models_config
 from mivlm.data.cases import load_cases
-from mivlm.models.inference import case_messages, image_token_spans, infer, prepare_inputs
+from mivlm.models.inference import case_messages, image_token_spans, infer, prepare_inputs, yes_no_token_ids
 from mivlm.models.loading import load_model
 
 # 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
@@ -44,8 +44,9 @@ def messages():
 
 @pytest.fixture(scope="module")
 def inputs(loaded, messages):
-    _, processor = loaded
-    return prepare_inputs(processor, messages)
+    # extract_hidden_states와 position_ids는 device로 옮긴 입력을 받는다
+    model, processor = loaded
+    return prepare_inputs(processor, messages).to(model.device)
 
 
 @pytest.fixture(scope="module")
@@ -70,8 +71,7 @@ def test_shape_is_all_layers_all_tokens(loaded, inputs, extracted):
 def test_logits_match_infer(loaded, messages, extracted):
     # 같은 입력을 generate로 돌린 infer의 값과 같아야 한다: 꺼낸 hidden state가 baseline과 같은 계산에서 나왔다는 근거
     model, processor = loaded
-    (yes_id,) = processor.tokenizer.encode("Yes", add_special_tokens=False)
-    (no_id,) = processor.tokenizer.encode("No", add_special_tokens=False)
+    yes_id, no_id = yes_no_token_ids(processor.tokenizer)
     yes_logit, no_logit = extracted["logits"][yes_id].item(), extracted["logits"][no_id].item()
 
     result = infer(model, processor, messages)

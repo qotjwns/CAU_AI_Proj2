@@ -76,12 +76,12 @@ def runs(loaded):
     results = {}
     for name, image_ids, messages in planned:
         inputs = prepare_inputs(processor, messages)
-        input_ids = inputs["input_ids"][0]  # extract_hidden_states가 inputs를 device로 옮기기 전의 CPU 텐서
+        input_ids = inputs["input_ids"][0]  # inputs를 device로 옮기기 전의 CPU 텐서
         results[name] = {
             "image_ids": image_ids,
             "input_ids": input_ids,
             "spans": image_token_spans(input_ids, processor.image_token_id),
-            "hidden": extract_hidden_states(model, inputs)["hidden_states"],
+            "hidden": extract_hidden_states(model, inputs.to(model.device))["hidden_states"],
         }
     return results
 

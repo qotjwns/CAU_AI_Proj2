@@ -12,7 +12,9 @@ import torch
 from mivlm.analysis.hidden_states import compare_hidden_states, extract_hidden_states
 from mivlm.data.cases import load_cases
 from mivlm.evaluation.report import print_layer_table
-from mivlm.models.inference import case_messages, image_token_spans, prepare_inputs, single_image_messages
+from mivlm.models.inference import (
+    case_messages, image_token_spans, prepare_inputs, single_image_messages, yes_no_token_ids,
+)
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
@@ -45,11 +47,10 @@ def main() -> None:
     planned["P1 alone"] = ([p1], single_image_messages({"image_id": p1, "object": cases["PPP"]["object"]}))
 
     model, processor = load_model(MODEL_NAME)
-    (yes_id,) = processor.tokenizer.encode("Yes", add_special_tokens=False)
-    (no_id,) = processor.tokenizer.encode("No", add_special_tokens=False)
+    yes_id, no_id = yes_no_token_ids(processor.tokenizer)
     images = {}  # (입력 이름, 자리) -> (image_id, 그 이미지의 벡터들 shape (층 수, 토큰 수, 벡터 크기))
     for name, (image_ids, messages) in planned.items():
-        inputs = prepare_inputs(processor, messages)
+        inputs = prepare_inputs(processor, messages).to(model.device)
         spans = image_token_spans(inputs["input_ids"][0], processor.image_token_id)
         extracted = extract_hidden_states(model, inputs)
         hidden = extracted["hidden_states"]

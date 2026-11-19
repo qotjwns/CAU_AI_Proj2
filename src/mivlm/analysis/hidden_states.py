@@ -13,7 +13,8 @@ SAME_WITHIN = 1e-3
 def extract_hidden_states(model, inputs) -> dict:
     """입력 하나를 forward 한 번 돌려 모든 층의 hidden state와 답변 위치의 logit을 돌려준다 (답은 생성하지 않는다)
 
-    inputs: prepare_inputs의 결과 (입력 하나). 모델의 device로 옮겨지고, 넘겨준 inputs 자체가 바뀐다
+    inputs: prepare_inputs의 결과를 모델의 device로 옮긴 것 (입력 하나). 옮기는 일은 부르는 쪽이 한 번 한다:
+        inputs = prepare_inputs(processor, messages).to(model.device)
     hidden_states: shape (층 수 + 1, 토큰 수, 벡터 크기), float32, CPU
         [0]은 첫 층에 들어가기 전의 벡터다. 글자 토큰은 embedding, 이미지 토큰은 vision encoder의 출력이다.
         [k]는 k번째 층의 출력이다. 단, 마지막 항목은 마지막 층의 출력에 최종 norm을 적용한 값이다 (transformers의 동작).
@@ -21,7 +22,7 @@ def extract_hidden_states(model, inputs) -> dict:
     logits: 답변 위치(마지막 토큰)의 logit, shape (vocab 크기,), float32, CPU. infer가 Yes/No를 읽는 첫 생성 위치에 해당한다
     """
     with torch.no_grad():  # generate와 달리 직접 forward 하면 gradient 계산용 값이 쌓이므로 끈다
-        out = model(**inputs.to(model.device), output_hidden_states=True)
+        out = model(**inputs, output_hidden_states=True)
     return {
         # out.hidden_states는 층마다 (1, 토큰 수, 벡터 크기)인 tuple이다. 입력이 하나이므로 맨 앞 차원을 없애고 쌓는다.
         # 층마다 먼저 CPU로 옮긴 다음 float32로 바꾸고 쌓는다. device에서 쌓고 바꾸면 전체 크기의 텐서가 device에
@@ -58,7 +59,7 @@ def position_ids(model, inputs) -> torch.Tensor:
     그래서 position id는 토큰 인덱스와 다르고, 토큰 인덱스가 같아도 position id가 같다고 볼 수 없다.
 
     Qwen2.5-VL 전용이다. forward가 position id를 만들 때 부르는 함수를 같은 값으로 부른다.
-    inputs: prepare_inputs의 결과 (입력 하나)
+    inputs: extract_hidden_states에 넘기는 것과 같은 inputs (모델의 device로 옮긴 입력 하나)
     """
     ids = model.model.compute_3d_position_ids(
         input_ids=inputs["input_ids"],

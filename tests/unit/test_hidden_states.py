@@ -36,17 +36,9 @@ class FakeModel:
         return SimpleNamespace(hidden_states=hidden_states, logits=logits.to(torch.bfloat16))
 
 
-class FakeInputs(dict):
-    """processor 결과처럼 .to(device)가 있는 dict"""
-
-    def to(self, device):
-        self.device = device
-        return self
-
-
 def _extract():
     model = FakeModel()
-    inputs = FakeInputs(input_ids=torch.zeros(1, N_TOKENS, dtype=torch.long))
+    inputs = {"input_ids": torch.zeros(1, N_TOKENS, dtype=torch.long)}  # 부르는 쪽이 이미 device로 옮긴 입력
     return model, inputs, extract_hidden_states(model, inputs)
 
 
@@ -85,7 +77,7 @@ def test_values_are_the_same_as_stacking_first_and_converting_after():
         def __call__(self, **kwargs):
             return SimpleNamespace(hidden_states=layers, logits=torch.zeros(1, N_TOKENS, VOCAB_SIZE))
 
-    result = extract_hidden_states(RandomModel(), FakeInputs(input_ids=torch.zeros(1, N_TOKENS, dtype=torch.long)))
+    result = extract_hidden_states(RandomModel(), {"input_ids": torch.zeros(1, N_TOKENS, dtype=torch.long)})
 
     expected = torch.stack([layer[0] for layer in layers]).float()
     assert result["hidden_states"].shape == (N_LAYERS, N_TOKENS, HIDDEN_SIZE)
@@ -100,10 +92,10 @@ def test_logits_are_from_the_last_token():
     assert result["logits"].tolist() == [50, 51, 52, 53, 54]
 
 
-def test_model_is_called_on_its_device_for_all_layers_without_gradient():
+def test_model_is_called_with_the_given_inputs_for_all_layers_without_gradient():
+    # inputs를 device로 옮기는 일은 부르는 쪽이 한다. 여기서는 받은 텐서를 그대로 모델에 넘기는지만 본다
     model, inputs, result = _extract()
 
-    assert inputs.device == model.device
     assert model.kwargs["input_ids"] is inputs["input_ids"]
     assert model.kwargs["output_hidden_states"] is True
     assert not result["hidden_states"].requires_grad
