@@ -18,8 +18,10 @@ def extract_hidden_states(model, inputs) -> dict:
     with torch.no_grad():  # generate와 달리 직접 forward 하면 gradient 계산용 값이 쌓이므로 끈다
         out = model(**inputs.to(model.device), output_hidden_states=True)
     return {
-        # out.hidden_states는 층마다 (1, 토큰 수, 벡터 크기)인 tuple이다. 입력이 하나이므로 맨 앞 차원을 없애고 쌓는다
-        "hidden_states": torch.stack([layer[0] for layer in out.hidden_states]).float().cpu(),
+        # out.hidden_states는 층마다 (1, 토큰 수, 벡터 크기)인 tuple이다. 입력이 하나이므로 맨 앞 차원을 없애고 쌓는다.
+        # 층마다 먼저 CPU로 옮긴 다음 float32로 바꾸고 쌓는다. device에서 쌓고 바꾸면 전체 크기의 텐서가 device에
+        # 두 번 더 잡힌다. bf16 → float32는 값이 그대로 옮겨지므로 어디서 바꾸든 결과는 같다
+        "hidden_states": torch.stack([layer[0].cpu().float() for layer in out.hidden_states]),
         "logits": out.logits[0, -1].float().cpu(),
     }
 

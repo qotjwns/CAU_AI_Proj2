@@ -73,6 +73,26 @@ def test_bf16_becomes_float32_on_cpu():
         assert result[name].device.type == "cpu", name
 
 
+def test_values_are_the_same_as_stacking_first_and_converting_after():
+    # 회귀 테스트: 층마다 CPU로 옮겨 float32로 바꾼 뒤 쌓아도, 예전처럼 먼저 쌓고 한꺼번에 바꾼 것과 값이 완전히 같다
+    generator = torch.Generator().manual_seed(0)
+    layers = tuple(torch.randn(1, N_TOKENS, HIDDEN_SIZE, generator=generator).to(torch.bfloat16)
+                   for _ in range(N_LAYERS))
+
+    class RandomModel:
+        device = torch.device("cpu")
+
+        def __call__(self, **kwargs):
+            return SimpleNamespace(hidden_states=layers, logits=torch.zeros(1, N_TOKENS, VOCAB_SIZE))
+
+    result = extract_hidden_states(RandomModel(), FakeInputs(input_ids=torch.zeros(1, N_TOKENS, dtype=torch.long)))
+
+    expected = torch.stack([layer[0] for layer in layers]).float()
+    assert result["hidden_states"].shape == (N_LAYERS, N_TOKENS, HIDDEN_SIZE)
+    assert result["hidden_states"].dtype == torch.float32
+    assert torch.equal(result["hidden_states"], expected)
+
+
 def test_logits_are_from_the_last_token():
     _, _, result = _extract()
 
