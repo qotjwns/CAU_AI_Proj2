@@ -6,11 +6,13 @@ pytest tests/unit/test_pair_record.py -v
 이미지마다 토큰 수와, position id가 커지는 폭을 따로 정해서 "토큰 인덱스는 같은데 position id는 다른 경우"와
 그 반대의 경우가 모두 나오게 했다.
 """
+import json
+
 import pytest
 import torch
 
 from mivlm.analysis.hidden_states import compare_hidden_states
-from mivlm.analysis.pair_record import COMPARISONS, build_pair_record
+from mivlm.analysis.pair_record import COMPARISONS, build_pair_record, check_image_layout, pair_summary
 
 N_LAYERS, HIDDEN_SIZE = 3, 4
 LAYOUT = {  # 변형마다 자리 1, 2, 3에 놓이는 이미지
@@ -212,3 +214,98 @@ def test_missing_variant_is_an_error(observations):
 
     with pytest.raises(KeyError):
         build_pair_record("fake_pair", observations)
+
+
+# --------------------------------------------------------------- pair_summary
+
+
+def test_summary_can_be_written_as_json_and_has_the_case_logits(record):
+    summary = json.loads(json.dumps(pair_summary(record)))
+
+    assert set(summary) == {
+        "cases", "same_token_index", "same_position_ids", "same_prefix_max_relative_l2", "same_prefix_identical",
+    }
+    assert list(summary["cases"]) == list(LAYOUT)
+    assert summary["cases"]["PNP"] == {
+        "case_id": "fake_pair_PNP", "yes_logit": 3.5, "no_logit": 1.25, "logit_margin": 2.25, "input_token_count": 13,
+    }
+
+
+def test_summary_lists_the_two_position_conditions_in_comparison_order(record):
+    summary = pair_summary(record)
+
+    assert summary["same_token_index"] == [c["same_token_index"] for c in record["comparisons"]]
+    assert summary["same_position_ids"] == [c["same_position_ids"] for c in record["comparisons"]]
+    assert summary["same_token_index"] != summary["same_position_ids"]  # 서로 다른 조건이다
+
+
+def test_summary_reports_the_same_prefix_measurement_when_vectors_differ(record):
+    # 가짜 pair는 변형마다 hidden state가 다른 난수라서 기준선도 같지 않다
+    summary = pair_summary(record)
+
+    assert summary["same_prefix_max_relative_l2"] == record["comparisons"][11]["relative_l2"].max().item()
+    assert summary["same_prefix_max_relative_l2"] > 0
+    assert summary["same_prefix_identical"] is False
+
+
+def test_summary_reports_identical_same_prefix_as_zero(observations):
+    # 실제 모델에서 기대하는 경우: PPP와 PPN은 P2(토큰 5~7)까지 앞부분이 같으므로 벡터도 같다
+    observations["PPN"]["hidden_states"][:, :8] = observations["PPP"]["hidden_states"][:, :8]
+
+    summary = pair_summary(build_pair_record("fake_pair", observations))
+
+    assert summary["same_prefix_max_relative_l2"] == 0.0
+    assert summary["same_prefix_identical"] is True
+
+
+# --------------------------------------------------------- check_image_layout
+
+
+def model_layout():
+    """글자 2개 → 2행 3열짜리 이미지(패치 격자 4 x 6, merge 2) → 글자 1개. 실제 모델의 규칙대로 쓴 position id
+
+    이미지의 첫 토큰이 2번이다. 시간 축은 전부 2, 세로 축은 행마다, 가로 축은 열마다 1씩 커진다.
+    이미지 뒤의 글자는 2 + max(2, 3) = 5번이다.
+    """
+    ids = torch.tensor([
+        [0, 1, 2, 2, 2, 2, 2, 2, 5],
+        [0, 1, 2, 2, 2, 3, 3, 3, 5],
+        [0, 1, 2, 3, 4, 2, 3, 4, 5],
+    ])
+    return [(2, 8)], [[1, 4, 6]], ids
+
+
+def test_layout_that_follows_the_grid_passes():
+    token_spans, image_grid_thw, ids = model_layout()
+
+    check_image_layout("case", token_spans, image_grid_thw, ids, merge_size=2)  # 에러가 없어야 한다
+
+
+def test_layout_with_a_different_number_of_spans_and_grids_is_rejected():
+    token_spans, image_grid_thw, ids = model_layout()
+
+    with pytest.raises(ValueError, match="격자는 2개"):
+        check_image_layout("case", token_spans, image_grid_thw + [[1, 4, 6]], ids, merge_size=2)
+
+
+def test_layout_with_a_token_count_that_does_not_match_the_grid_is_rejected():
+    _, image_grid_thw, ids = model_layout()
+
+    with pytest.raises(ValueError, match="토큰 수 5"):
+        check_image_layout("case", [(2, 7)], image_grid_thw, ids, merge_size=2)
+
+
+def test_layout_in_column_first_order_is_rejected():
+    token_spans, image_grid_thw, ids = model_layout()
+    column_first = ids[[0, 2, 1]]  # 세로 축과 가로 축을 바꾼다
+
+    with pytest.raises(ValueError, match="행 우선"):
+        check_image_layout("case", token_spans, image_grid_thw, column_first, merge_size=2)
+
+
+def test_layout_with_a_changing_time_axis_is_rejected():
+    token_spans, image_grid_thw, ids = model_layout()
+    ids[0, 4] += 1  # 이미지 안에서 시간 축의 값이 달라진다
+
+    with pytest.raises(ValueError, match="행 우선"):
+        check_image_layout("case", token_spans, image_grid_thw, ids, merge_size=2)
