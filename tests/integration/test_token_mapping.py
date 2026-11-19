@@ -7,10 +7,9 @@ MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_token_mapping.py -v
 대상: 클래스마다 첫 pair(group_01의 pair 1)의 NPP, PNP, PPN. 같은 N 이미지가 자리 1, 2, 3으로 옮겨 간다.
 구간 길이만으로는 어느 이미지인지 알 수 없으므로(크기가 같으면 토큰 수도 같다) 내용, 길이, 위치를 따로 맞춰 본다.
 """
-import os
-
 import pytest
 import torch
+from conftest import MODEL_NAME  # 다른 모델로 돌리려면 환경 변수로 이름을 준다 (conftest.py 참고)
 from huggingface_hub import try_to_load_from_cache
 from transformers import AutoProcessor
 
@@ -18,8 +17,6 @@ from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR, load_models_config
 from mivlm.data.cases import load_cases
 from mivlm.models.inference import case_messages, image_token_spans, prepare_inputs, single_image_messages
 
-# 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
-MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
 N_MOVES = ["NPP", "PNP", "PPN"]  # N이 자리 1 → 2 → 3으로 옮겨 가는 순서. 목록에서의 순번이 곧 N의 자리다
 FIRST_IMAGE_TOKEN = 15  # 앞에 system 블록 11 + user 머리 3 + <|vision_start|> 1
 TOKENS_BETWEEN_IMAGES = 2  # <|vision_end|>, <|vision_start|>

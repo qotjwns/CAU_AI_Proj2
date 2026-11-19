@@ -4,36 +4,21 @@ pytest tests/integration/test_qwen_hidden_states.py -v -s
 MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_qwen_hidden_states.py -v -s     # 다른 모델로
 MIVLM_TEST_DTYPE=float32 pytest tests/integration/test_qwen_hidden_states.py -v -s           # 다른 dtype으로
 """
-import os
-
 import pytest
 import torch
-from huggingface_hub import try_to_load_from_cache
 
 from mivlm.analysis.hidden_states import extract_hidden_states, position_ids
-from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR, load_models_config
+from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR
 from mivlm.data.cases import load_cases
 from mivlm.models.inference import case_messages, image_token_spans, infer, prepare_inputs, yes_no_token_ids
-from mivlm.models.loading import load_model
 
-# 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
-MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
-# 다른 dtype으로 돌리려면: MIVLM_TEST_DTYPE=float32 pytest <이 파일>. 주지 않으면 device의 기본값 (CUDA, MPS는 bfloat16)
-DTYPE = os.environ.get("MIVLM_TEST_DTYPE")
 CASE_ID = "group_01_person_1_PPN"
 
+# 모델(loaded)은 conftest.py가 로딩한다. 모델이 없으면 거기서 건너뛴다
 pytestmark = pytest.mark.skipif(
-    not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
-    or not CASES_JSONL.exists()
-    or not COCO_IMAGE_DIR.exists(),
-    reason=f"모델, 케이스 파일 또는 COCO 이미지가 없음: scripts/download_model.py {MODEL_NAME}, "
-           "scripts/download_coco.py, build_cases.py를 먼저 실행",
+    not CASES_JSONL.exists() or not COCO_IMAGE_DIR.exists(),
+    reason="케이스 파일 또는 COCO 이미지가 없음: scripts/download_coco.py, build_cases.py를 먼저 실행",
 )
-
-
-@pytest.fixture(scope="module")
-def loaded():
-    return load_model(MODEL_NAME, getattr(torch, DTYPE) if DTYPE else None)
 
 
 @pytest.fixture(scope="module")

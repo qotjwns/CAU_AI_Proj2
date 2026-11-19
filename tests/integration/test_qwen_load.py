@@ -1,36 +1,31 @@
 """
-실제 Qwen2.5-VL-3B 로딩과 이미지 전처리 검사
+실제 Qwen2.5-VL 로딩과 이미지 전처리 검사 (기본 3B)
 pytest tests/integration/test_qwen_load.py -v -s
 """
 import pytest
-from huggingface_hub import try_to_load_from_cache
+import torch
+from conftest import DTYPE
 
-from mivlm.config import load_models_config
 from mivlm.data.image import image_path
-from mivlm.models.loading import load_model, pick_device
+from mivlm.models.loading import pick_device
 
-MODEL_NAME = "qwen2.5-vl-3b"
 GRAY_IMAGE_ID = 209222  # 흑백(L 모드) 640x427. 이전 STEP 1에서도 쓰인 이미지
 
+# 모델(loaded)은 conftest.py가 로딩한다. 모델이 없으면 거기서 건너뛴다
 pytestmark = pytest.mark.skipif(
-    not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
-    or not image_path(GRAY_IMAGE_ID).exists(),
-    reason="모델 또는 COCO 이미지가 없음: scripts/download_model.py qwen2.5-vl-3b, scripts/download_coco.py를 먼저 실행",
+    not image_path(GRAY_IMAGE_ID).exists(),
+    reason="COCO 이미지가 없음: scripts/download_coco.py를 먼저 실행",
 )
 
 
-@pytest.fixture(scope="module")
-def loaded():
-    return load_model(MODEL_NAME)
-
-
 def test_device_and_dtype(loaded):
+    # dtype을 따로 주지 않았으면(MIVLM_TEST_DTYPE 없음) device의 기본값으로 로딩돼야 한다
     model, _ = loaded
-    device, dtype = pick_device()
+    device, default_dtype = pick_device()
     print(f"\ndevice={model.device}, dtype={model.dtype}")
 
     assert model.device.type == device
-    assert model.dtype == dtype
+    assert model.dtype == (getattr(torch, DTYPE) if DTYPE else default_dtype)
 
 
 def test_eval_mode(loaded):

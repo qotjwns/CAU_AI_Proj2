@@ -1,28 +1,19 @@
 """
-실제 Qwen2.5-VL-3B로 이미지 1장 추론 검사
+실제 Qwen2.5-VL로 이미지 1장 추론 검사 (기본 3B)
 pytest tests/integration/test_qwen_inference.py -v -s
 """
 import pytest
-from huggingface_hub import try_to_load_from_cache
 
-from mivlm.config import load_models_config
 from mivlm.data.image import image_path
 from mivlm.models.inference import SINGLE_IMAGE_QUESTION, build_messages, infer
-from mivlm.models.loading import load_model
 
-MODEL_NAME = "qwen2.5-vl-3b"
 CAT_IMAGE_ID = 39769  # 고양이 두 마리가 소파에 누워 있는 640x480 사진
 
+# 모델(loaded)은 conftest.py가 로딩한다. 모델이 없으면 거기서 건너뛴다
 pytestmark = pytest.mark.skipif(
-    not isinstance(try_to_load_from_cache(load_models_config()[MODEL_NAME], "config.json"), str)
-    or not image_path(CAT_IMAGE_ID).exists(),
-    reason="모델 또는 COCO 이미지가 없음: scripts/download_model.py qwen2.5-vl-3b, scripts/download_coco.py를 먼저 실행",
+    not image_path(CAT_IMAGE_ID).exists(),
+    reason="COCO 이미지가 없음: scripts/download_coco.py를 먼저 실행",
 )
-
-
-@pytest.fixture(scope="module")
-def loaded():
-    return load_model(MODEL_NAME)
 
 
 def _ask(loaded, object_name):
