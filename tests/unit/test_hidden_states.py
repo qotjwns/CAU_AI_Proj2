@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from mivlm.analysis.hidden_states import compare_hidden_states, extract_hidden_states
+from mivlm.analysis.hidden_states import compare_hidden_states, extract_hidden_states, position_ids
 
 N_LAYERS, N_TOKENS, HIDDEN_SIZE, VOCAB_SIZE = 3, 6, 4, 5
 
@@ -156,3 +156,29 @@ def test_layers_are_compared_separately():
     assert result["token_cosine"][1].tolist() == pytest.approx([0.0, 0.0])
     assert result["relative_l2"][0].item() == 0.0
     assert result["relative_l2"][1].item() > 0
+
+
+# --------------------------------------------------------------- position_ids
+
+
+def test_position_ids_passes_the_inputs_and_drops_the_batch_dimension():
+    class FakeQwenModel:
+        """compute_3d_position_ids가 (3, 1, 토큰 수)를 돌려주는 가짜. 받은 인자를 기록한다"""
+
+        def compute_3d_position_ids(self, **kwargs):
+            self.kwargs = kwargs
+            return torch.arange(3 * N_TOKENS).reshape(3, 1, N_TOKENS)
+
+    model = SimpleNamespace(model=FakeQwenModel())
+    inputs = {
+        "input_ids": torch.zeros(1, N_TOKENS, dtype=torch.long),
+        "attention_mask": torch.ones(1, N_TOKENS, dtype=torch.long),
+        "mm_token_type_ids": torch.zeros(1, N_TOKENS, dtype=torch.long),
+        "image_grid_thw": torch.tensor([[1, 2, 2]]),
+    }
+
+    result = position_ids(model, inputs)
+
+    assert result.tolist() == torch.arange(3 * N_TOKENS).reshape(3, N_TOKENS).tolist()
+    for name in inputs:  # 네 입력이 그대로 전달된다
+        assert model.model.kwargs[name] is inputs[name], name

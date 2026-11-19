@@ -1,5 +1,6 @@
 """
 hidden state 꺼내기와 비교: 모델 안에서 층마다 토큰별로 만들어지는 벡터
+position id 꺼내기: 모델이 각 토큰의 위치로 쓰는 번호
 """
 import torch
 
@@ -39,3 +40,26 @@ def compare_hidden_states(a: torch.Tensor, b: torch.Tensor) -> dict[str, torch.T
         "cosine_of_means": torch.nn.functional.cosine_similarity(a.mean(dim=1), b.mean(dim=1), dim=-1),
         "relative_l2": (a - b).flatten(1).norm(dim=1) / a.flatten(1).norm(dim=1),
     }
+
+
+def position_ids(model, inputs) -> torch.Tensor:
+    """모델이 이 입력의 각 토큰에 쓰는 position id를 돌려준다: shape (3, 토큰 수), int64, CPU
+
+    3은 (시간, 세로, 가로) 축이다. 글자 토큰은 세 축의 값이 같다.
+    이미지 토큰은 격자 안의 위치를 따른다: 시간 축은 이미지 전체가 같은 값이고, 세로 축은 행마다, 가로 축은 열마다 1씩 커진다.
+    이미지 뒤의 토큰은 그 이미지의 토큰 수가 아니라 max(행 수, 열 수)만큼 건너뛴 번호를 받는다.
+    그래서 position id는 토큰 인덱스와 다르고, 토큰 인덱스가 같아도 position id가 같다고 볼 수 없다.
+
+    Qwen2.5-VL 전용이다. forward가 position id를 만들 때 부르는 함수를 같은 값으로 부른다.
+    inputs: prepare_inputs의 결과 (입력 하나)
+    """
+    ids = model.model.compute_3d_position_ids(
+        input_ids=inputs["input_ids"],
+        image_grid_thw=inputs["image_grid_thw"],
+        video_grid_thw=None,
+        inputs_embeds=None,
+        attention_mask=inputs["attention_mask"],
+        past_key_values=None,
+        mm_token_type_ids=inputs["mm_token_type_ids"],
+    )  # (3, 1, 토큰 수)
+    return ids[:, 0].cpu()

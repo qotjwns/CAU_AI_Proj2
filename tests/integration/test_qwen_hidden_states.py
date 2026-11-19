@@ -1,15 +1,15 @@
 """
-실제 Qwen2.5-VL-3B로 hidden state 꺼내기 검사 (이미지 3장 케이스 하나)
+실제 Qwen2.5-VL-3B로 hidden state와 position id 꺼내기 검사 (이미지 3장 케이스 하나)
 pytest tests/integration/test_qwen_hidden_states.py -v -s
 """
 import pytest
 import torch
 from huggingface_hub import try_to_load_from_cache
 
-from mivlm.analysis.hidden_states import extract_hidden_states
+from mivlm.analysis.hidden_states import extract_hidden_states, position_ids
 from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR, load_models_config
 from mivlm.data.cases import load_cases
-from mivlm.models.inference import case_messages, infer, prepare_inputs
+from mivlm.models.inference import case_messages, image_token_spans, infer, prepare_inputs
 from mivlm.models.loading import load_model
 
 MODEL_NAME = "qwen2.5-vl-3b"
@@ -83,3 +83,52 @@ def test_layer_0_differs_from_token_embedding_exactly_at_image_tokens(loaded, in
     print(f"\nimage tokens {is_image.sum().item()}, positions that differ from the embedding {differs.sum().item()}")
 
     assert torch.equal(differs, is_image)
+
+
+def test_position_ids_match_what_the_forward_uses(loaded, inputs):
+    # forward가 언어 모델에 실제로 넘기는 position_ids를 hook으로 잡아서 position_ids()의 값과 비교한다.
+    # position_ids()를 먼저 부르고 forward를 하므로, 미리 불러도 forward에 영향이 없다는 것도 같이 확인된다
+    model, _ = loaded
+    expected = position_ids(model, inputs)
+
+    captured = {}
+
+    def capture(module, args, kwargs):  # 언어 모델의 forward가 불리기 직전에 실행된다
+        captured["position_ids"] = kwargs["position_ids"]
+
+    handle = model.model.language_model.register_forward_pre_hook(capture, with_kwargs=True)
+    try:
+        extract_hidden_states(model, inputs)
+    finally:
+        handle.remove()  # hook을 남겨 두면 이후의 모든 forward에서 계속 실행된다
+
+    used = captured["position_ids"]  # (3, 1, 토큰 수)
+    print(f"\nposition ids used by the forward: {tuple(used.shape)}, {used.dtype}")
+
+    assert expected.shape == (3, inputs["input_ids"].shape[1])
+    assert torch.equal(used[:, 0].cpu(), expected)
+
+
+def test_position_ids_follow_the_image_grid(loaded, inputs):
+    # 글자 토큰: 세 축이 같다. 이미지 토큰: 시간 축은 이미지 전체가 같고, 토큰은 행 우선 순서(왼쪽 → 오른쪽, 위 → 아래)다.
+    # 이미지 뒤의 토큰은 토큰 수가 아니라 max(행 수, 열 수)만큼 건너뛴다
+    model, processor = loaded
+    ids = position_ids(model, inputs)
+    input_ids = inputs["input_ids"][0].cpu()
+    is_image = input_ids == processor.image_token_id
+    merge = processor.image_processor.merge_size
+
+    assert torch.equal(ids[0, ~is_image], ids[1, ~is_image])
+    assert torch.equal(ids[0, ~is_image], ids[2, ~is_image])
+
+    spans = image_token_spans(input_ids, processor.image_token_id)
+    for slot, ((start, end), (_, grid_h, grid_w)) in enumerate(zip(spans, inputs["image_grid_thw"].tolist()), start=1):
+        rows, columns = grid_h // merge, grid_w // merge
+        first = ids[0, start].item()  # 이 이미지의 첫 토큰이 받은 번호
+        print(f"\nslot {slot}: tokens {start}-{end - 1}, {rows} rows x {columns} columns, "
+              f"position ids start at {first}, next token gets {ids[0, end].item()}")
+
+        assert ids[0, start:end].tolist() == [first] * (rows * columns), slot
+        assert ids[1, start:end].tolist() == (first + torch.arange(rows).repeat_interleave(columns)).tolist(), slot
+        assert ids[2, start:end].tolist() == (first + torch.arange(columns).repeat(rows)).tolist(), slot
+        assert ids[0, end].item() == first + max(rows, columns), slot
