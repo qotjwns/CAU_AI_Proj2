@@ -2,6 +2,7 @@
 실험 실행의 공통 절차: 옵션 읽기 → 모델 로딩 → meta.json → 남은 항목 추론 → results.jsonl
 
 실험 스크립트는 '무엇을 추론할지'(항목 목록, 항목을 메시지로 바꾸는 법, 질문 문구)만 정해서 run_inference를 부른다.
+답을 생성하지 않는 실행(hidden state 저장 등)은 start_run과 run_items를 직접 부른다.
 결과는 outputs/predictions/<실험>/<모델>[_float32][_pilot]/에 저장된다.
 """
 import argparse
@@ -132,17 +133,27 @@ def run_items(run_dir: Path, items: list[dict], id_key: str, infer_item) -> int:
     return len(todo)
 
 
-def run_inference(experiment: str, args: argparse.Namespace, items: list[dict], id_key: str, make_messages, question: str) -> None:
-    """모델을 로딩하고 items를 추론해 저장한다
+def start_run(experiment: str, args: argparse.Namespace, n_items: int, question: str):
+    """실행 폴더를 만들고, 모델을 로딩하고, meta.json을 저장하거나 기존 것과 조건이 같은지 확인한다
 
     experiment: outputs/predictions/ 아래의 폴더 경로 (예: "01_baseline")
-    make_messages: 항목 하나를 모델에 넣을 메시지로 바꾸는 함수
     question: meta.json에 기록할 질문 문구
+    반환: (run_dir, model, processor). run_dir은 outputs/predictions/<실험>/<모델>[_float32][_pilot]/
     """
     run_name = args.model + (f"_{args.dtype}" if args.dtype else "") + ("_pilot" if args.pilot else "")
     run_dir = PREDICTIONS_DIR / experiment / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     model, processor = load_model(args.model, getattr(torch, args.dtype) if args.dtype else None)
-    check_or_save_meta(run_dir, build_meta(experiment, args, len(items), model, processor, question))
+    check_or_save_meta(run_dir, build_meta(experiment, args, n_items, model, processor, question))
+    return run_dir, model, processor
+
+
+def run_inference(experiment: str, args: argparse.Namespace, items: list[dict], id_key: str, make_messages, question: str) -> None:
+    """모델을 로딩하고 items를 추론해 저장한다
+
+    make_messages: 항목 하나를 모델에 넣을 메시지로 바꾸는 함수
+    나머지 인자는 start_run 참고
+    """
+    run_dir, model, processor = start_run(experiment, args, len(items), question)
     run_items(run_dir, items, id_key, lambda item: infer(model, processor, make_messages(item)))
