@@ -33,8 +33,8 @@ from mivlm.analysis.class_sensitivity import (
 )
 from mivlm.analysis.evidence_link import practical_verdict
 from mivlm.analysis.logit_bias import (
-    DAMAGE_LIMITS, NO_SHIFT_GRID, PRACTICAL_DELTA, TWO_WAY_GRID, bias_metrics, class_metrics, damage_limited_biases,
-    selection_rules,
+    DAMAGE_LIMITS, PRACTICAL_DELTA, bias_metrics, class_metrics, damage_limited_biases, no_shift_candidates,
+    selection_rules, two_way_candidates,
 )
 from mivlm.config import PREDICTIONS_DIR, TABLES_DIR
 from mivlm.data.cases import image_linked_classes
@@ -55,6 +55,8 @@ LIMITS = """[한계]
   class_oracle은 평가하는 케이스를 보고 기준을 정한 상한이다. 방법이 아니다.
   global과 class_cv의 차이는 쓰는 정보와 나누는 방식이 달라서 생긴 것이기도 하다. 클래스 성향의 인과적 효과로 읽지 않는다.
   bf16 실행의 margin은 0.125 간격이라, 손상 한도에 딱 맞는 기준이 없을 수 있다. 실제 손상률을 같이 본다.
+  후보 b는 c9c2899까지 0.125 간격의 격자였고, float32 실행의 손상 한도 2%, 5% 기준선이 그 격자 때문에 b = 0으로 떨어졌다.
+  결과를 본 뒤에 후보를 margin 값으로 바꿨으므로, 격자 결과와 이 결과는 민감도 분석으로 같이 적는다.
   구간은 클래스를 단위로 다시 뽑아 만든다. 단위가 적어(클래스 20개) 실제보다 조금 좁을 수 있다.
   같은 이미지를 여러 케이스가 돌려 쓰고, 일부 이미지는 두 클래스가 같이 쓴다."""
 
@@ -138,7 +140,7 @@ def main() -> None:
         "이어진 클래스를 같이 뺌": (rows, {name: number for number, group in enumerate(groups) for name in group}),
         "공유 이미지 pair 제외": (unshared_rows, one_class),
     }
-    evaluated = {setup: (setup_rows, selection_rules(setup_rows, fold_of, NO_SHIFT_GRID))
+    evaluated = {setup: (setup_rows, selection_rules(setup_rows, fold_of, no_shift_candidates))
                  for setup, (setup_rows, fold_of) in setups.items()}
     rules = evaluated[MAIN_SETUP][1]
     by_rule = {rule: class_metrics(rows, biases) for rule, biases in rules.items()}
@@ -149,8 +151,8 @@ def main() -> None:
     mismatched = sum((row["prediction"] == "Yes") != (row["logit_margin"] > 0) for row in rows)
     print(f"[확인] b = 0의 답이 모델의 원래 답과 다른 케이스: {mismatched}개 (0이어야 한다). "
           f"margin이 정확히 0인 케이스 {sum(row['logit_margin'] == 0 for row in rows)}개는 No로 센다")
-    print(f"후보 b: {NO_SHIFT_GRID[0]} ~ {NO_SHIFT_GRID[-1]}, 간격 {NO_SHIFT_GRID[1]} ({len(NO_SHIFT_GRID)}개). "
-          f"가장 큰 margin {max(row['logit_margin'] for row in rows):.3f}")
+    print(f"후보 b: 0과, 기준을 고르는 쪽 행들의 margin 값 (평가하는 쪽의 margin은 쓰지 않는다). "
+          f"전체 행의 후보는 {len(no_shift_candidates(rows))}개, 가장 큰 margin {max(row['logit_margin'] for row in rows):.3f}")
 
     print_rule_summary("주 분석: No 쪽으로의 이동 (b >= 0), 평가 방식: " + MAIN_SETUP, rows, rules)
     print_verdicts("판정", evaluated)
@@ -182,7 +184,7 @@ def main() -> None:
         **{f"PPP {SHORT[rule]}": (f"ppp_accuracy_{rule}", ".0%") for rule in rules},
     })
 
-    two_way = selection_rules(rows, one_class, TWO_WAY_GRID)
+    two_way = selection_rules(rows, one_class, two_way_candidates)
     print_rule_summary("별도 분석: 양방향 보정 (b가 음수도 될 수 있음), 평가 방식: " + MAIN_SETUP, rows, two_way)
     print_verdicts("별도 분석의 비교: 양방향 보정. 주 판정이 아니다", {MAIN_SETUP: (rows, two_way)})
     print(f"\n{LIMITS}")

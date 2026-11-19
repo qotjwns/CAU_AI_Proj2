@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
 
 from mivlm.analysis.logit_bias import (
-    DAMAGE_LIMITS, NO_SHIFT_GRID, bias_metrics, damage_limited_biases, selection_rules, tradeoff_curve,
+    DAMAGE_LIMITS, bias_metrics, damage_limited_biases, no_shift_candidates, selection_rules, tradeoff_curve,
 )
 from mivlm.config import FIGURES_DIR, PREDICTIONS_DIR
 from mivlm.evaluation.metrics import ONE_N_VARIANTS, load_rows
@@ -33,7 +33,7 @@ def main() -> None:
             if row["variant"] in ["PPP", *ONE_N_VARIANTS]]
     one_class = {row["object"]: row["object"] for row in rows}
     curve = tradeoff_curve(rows)
-    rules = selection_rules(rows, one_class, NO_SHIFT_GRID)
+    rules = selection_rules(rows, one_class, no_shift_candidates)
     # 점 이름 -> (행마다의 기준, 색, 표시 모양)
     points = {
         **{f"damage limit {limit:.0%}, threshold from other classes":

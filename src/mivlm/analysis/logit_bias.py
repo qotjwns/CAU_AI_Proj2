@@ -5,8 +5,8 @@
 
 규칙: logit margin > b이면 Yes, 아니면 No. margin이 b와 같으면 No다.
     b = 0이 모델의 원래 답이다 (margin이 0보다 커야 Yes). b를 올리면 Yes가 줄어든다 (No 쪽으로의 이동).
-주 분석은 No 쪽으로의 이동만 본다 (b >= 0, NO_SHIFT_GRID). b가 음수도 될 수 있는 양방향 보정(TWO_WAY_GRID)은
-별도 분석이다. 후보 b는 결과와 상관없이 정해 둔 격자다.
+주 분석은 No 쪽으로의 이동만 본다 (b >= 0, no_shift_candidates). b가 음수도 될 수 있는 양방향 보정
+(two_way_candidates)은 별도 분석이다. 후보 b는 기준을 고르는 쪽 행들의 margin 값이고, 평가하는 쪽의 margin은 쓰지 않는다.
 
 기준을 정하는 방법은 assign_biases 하나로 나타낸다 (selection_rules 참고)
     global        다른 클래스들에서 고른 기준 하나를 그 클래스에 적용한다. 실제로 쓸 수 있는 방법이다
@@ -18,12 +18,25 @@ global과 class_cv의 차이는 쓰는 정보와 나누는 방식이 달라서 �
 """
 import torch
 
-B_STEP = 0.125  # 후보 b의 간격. bf16 margin의 간격과 같다
-B_MAX = 16.0  # 후보 b의 범위의 끝. 실행할 때 가장 큰 margin을 출력하므로, 그보다 작으면 범위를 늘린다
-NO_SHIFT_GRID = [step * B_STEP for step in range(int(B_MAX / B_STEP) + 1)]  # 0, 0.125, ..., 16. 주 분석의 후보
-TWO_WAY_GRID = [-b for b in reversed(NO_SHIFT_GRID[1:])] + NO_SHIFT_GRID  # -16, ..., 0, ..., 16. 양방향 보정의 후보
 DAMAGE_LIMITS = [0.02, 0.05, 0.10]  # PPP 손상률의 한도
 PRACTICAL_DELTA = 0.02  # 실질적 효과의 기준: 균형 정확도 차이 2%p. 연구자가 정한 값이다
+
+
+def no_shift_candidates(rows: list[dict]) -> list[float]:
+    """No 쪽으로의 이동(b >= 0)의 후보 b: 0과, rows에 있는 양수 margin 값 전부 (작은 것부터, 값은 반올림하지 않는다)
+
+    margin > b가 Yes이므로, rows의 답이 바뀌는 곳은 margin 값뿐이다. 이웃한 두 margin 사이의 b는 rows에서 결과가 모두 같고,
+    후보는 그 구간의 아래쪽 끝(0에 가까운 쪽)이다. 그래서 고정 간격 격자와 달리 놓치는 기준이 없다.
+    """
+    return sorted({0.0} | {row["logit_margin"] for row in rows if row["logit_margin"] > 0})
+
+
+def two_way_candidates(rows: list[dict]) -> list[float]:
+    """양방향 보정의 후보 b: 0과, rows에 있는 margin 값 전부 (음수 포함, 작은 것부터)
+
+    후보는 no_shift_candidates와 같이 구간의 아래쪽 끝이다. 그래서 음수 쪽에서는 0에서 가장 먼 쪽이 후보가 된다.
+    """
+    return sorted({0.0} | {row["logit_margin"] for row in rows})
 
 
 def _rate(count: int, total: int) -> float:
@@ -83,21 +96,22 @@ def sweep(rows: list[dict], grid: list[float]) -> dict[str, torch.Tensor]:
     }
 
 
-def best_bias(rows: list[dict], grid: list[float]) -> float:
-    """rows에서 균형 정확도가 가장 높은 기준. 여럿이면 0에 가장 가까운 것, 그래도 여럿이면 양수인 것을 고른다"""
-    balanced = sweep(rows, grid)["balanced_accuracy"].tolist()
+def best_bias(rows: list[dict], candidates: list[float]) -> float:
+    """후보 중 rows에서 균형 정확도가 가장 높은 기준. 여럿이면 0에 가장 가까운 것, 그래도 여럿이면 양수인 것을 고른다"""
+    balanced = sweep(rows, candidates)["balanced_accuracy"].tolist()
     highest = max(balanced)
-    return min((bias for bias, value in zip(grid, balanced) if value == highest), key=lambda bias: (abs(bias), -bias))
+    return min((bias for bias, value in zip(candidates, balanced) if value == highest),
+               key=lambda bias: (abs(bias), -bias))
 
 
-def largest_bias_within_damage(rows: list[dict], grid: list[float], limit: float) -> float:
-    """rows에서 PPP 손상률이 limit 이하인 가장 큰 기준
+def largest_bias_within_damage(rows: list[dict], candidates: list[float], limit: float) -> float:
+    """후보 중 rows에서 PPP 손상률이 limit 이하인 가장 큰 기준
 
-    grid는 0 이상이어야 한다 (NO_SHIFT_GRID). b = 0의 손상률이 0이라 답이 항상 있다.
+    candidates는 0 이상이고 0을 포함해야 한다 (no_shift_candidates). b = 0의 손상률이 0이라 답이 항상 있다.
     기준이 클수록 손상률도 교정률도 줄지 않으므로, 한도 안에서 가장 큰 기준이 False-Yes를 가장 많이 고친다.
     """
-    damage = sweep(rows, grid)["ppp_damage_rate"].tolist()
-    return max(bias for bias, value in zip(grid, damage) if value <= limit)
+    damage = sweep(rows, candidates)["ppp_damage_rate"].tolist()
+    return max(bias for bias, value in zip(candidates, damage) if value <= limit)
 
 
 def assign_biases(rows: list[dict], unit, pool, choose, hold_out: bool) -> list[float]:
@@ -105,7 +119,7 @@ def assign_biases(rows: list[dict], unit, pool, choose, hold_out: bool) -> list[
 
     unit(row): 평가 단위. 같은 단위의 행은 같은 기준을 받는다
     pool(row): 기준을 고를 때 쓸 수 있는 행의 범위. pool이 같은 행들 안에서만 고른다
-    choose(행들): 그 행들을 보고 기준 하나를 돌려주는 함수. 예: lambda rows: best_bias(rows, NO_SHIFT_GRID)
+    choose(행들): 그 행들을 보고 기준 하나를 돌려주는 함수. 예: lambda rows: best_bias(rows, no_shift_candidates(rows))
     hold_out: True면 평가 단위 자신의 행을 빼고 고른다. 그 단위의 정답이 그 단위의 기준에 쓰이지 않는다
     자신을 뺐더니 고를 행이 남지 않으면 에러를 낸다 (예: 그룹이 하나뿐인 클래스의 class_cv).
     """
@@ -120,14 +134,16 @@ def assign_biases(rows: list[dict], unit, pool, choose, hold_out: bool) -> list[
     return [bias_of_unit[unit(row)] for row in rows]
 
 
-def selection_rules(rows: list[dict], fold_of: dict, grid: list[float]) -> dict[str, list[float]]:
+def selection_rules(rows: list[dict], fold_of: dict, candidates) -> dict[str, list[float]]:
     """균형 정확도가 가장 높은 기준을 고르는 네 규칙의, 행마다의 기준: {규칙 이름: [기준, ...]}
 
     fold_of: {클래스: 묶음 이름}. global은 그 묶음을 통째로 빼고 고른다 (클래스를 하나씩 빼려면 {클래스: 클래스})
+    candidates(행들): 후보 b의 목록을 만드는 함수 (no_shift_candidates 또는 two_way_candidates).
+        기준을 고르는 쪽의 행들로만 만든다
     original은 기준 0(모델의 원래 답)이다. 나머지 셋은 파일 맨 위의 설명과 같다.
     """
     def choose(training: list[dict]) -> float:
-        return best_bias(training, grid)
+        return best_bias(training, candidates(training))
 
     def same_class(row: dict) -> str:
         return row["object"]
@@ -144,10 +160,12 @@ def selection_rules(rows: list[dict], fold_of: dict, grid: list[float]) -> dict[
 def damage_limited_biases(rows: list[dict], fold_of: dict, limit: float) -> list[float]:
     """PPP 손상률 한도의 기준선: 행마다, 그 클래스의 묶음을 뺀 나머지에서 손상률이 limit 이하인 가장 큰 기준
 
-    기준은 학습 쪽에서만 고른다. 평가 쪽의 실제 손상률은 한도를 넘을 수 있고, 넘었는지는 평가 결과에서 그대로 본다.
+    기준과 후보는 학습 쪽에서만 만든다. 평가 쪽의 실제 손상률은 한도를 넘을 수 있고, 넘었는지는 평가 결과에서 그대로 본다.
     """
-    return assign_biases(rows, lambda row: fold_of[row["object"]], lambda row: None,
-                         lambda training: largest_bias_within_damage(training, NO_SHIFT_GRID, limit), hold_out=True)
+    def choose(training: list[dict]) -> float:
+        return largest_bias_within_damage(training, no_shift_candidates(training), limit)
+
+    return assign_biases(rows, lambda row: fold_of[row["object"]], lambda row: None, choose, hold_out=True)
 
 
 def class_metrics(rows: list[dict], biases: list[float]) -> dict[str, dict[str, float]]:
@@ -162,8 +180,7 @@ def class_metrics(rows: list[dict], biases: list[float]) -> dict[str, dict[str, 
 def tradeoff_curve(rows: list[dict]) -> list[dict]:
     """기준을 0부터 올려 가며 본 맞바꿈 곡선: 기준마다 {"bias", ...bias_metrics의 지표}
 
-    기준은 0과, 행들에 실제로 있는 양수 margin 값 전부다. 그 사이의 값은 결과를 바꾸지 않으므로 곡선이 정확하다.
-    고르는 과정이 없는 기술 통계이고, 같은 데이터로 그린 것이라 성능의 추정이 아니다.
+    기준은 no_shift_candidates(rows), 즉 0과 행들에 실제로 있는 양수 margin 값 전부다. 그 사이의 값은 결과를 바꾸지
+    않으므로 곡선이 정확하다. 고르는 과정이 없는 기술 통계이고, 같은 데이터로 그린 것이라 성능의 추정이 아니다.
     """
-    thresholds = sorted({0.0} | {row["logit_margin"] for row in rows if row["logit_margin"] > 0})
-    return [{"bias": bias, **bias_metrics(rows, [bias] * len(rows))} for bias in thresholds]
+    return [{"bias": bias, **bias_metrics(rows, [bias] * len(rows))} for bias in no_shift_candidates(rows)]
