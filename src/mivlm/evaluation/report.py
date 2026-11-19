@@ -33,3 +33,20 @@ def print_layer_table(title: str, columns: dict, value_format: str) -> None:
     print("layer" + "".join(f"{name:>10}" for name in columns))
     for layer in range(len(next(iter(columns.values())))):
         print(f"{layer:>5}" + "".join(f"{values[layer].item():>10{value_format}}" for values in columns.values()))
+
+
+def print_class_table(title: str, table: dict[str, dict], columns: dict[str, tuple[str, str]]) -> None:
+    """행은 클래스, 열은 columns인 표를 출력한다
+
+    table: {클래스: {키: 값}}. columns: {열 이름: (키, 값의 형식)}. 예: {"yes PPP": ("yes_rate_PPP", ".0%")}
+    """
+    print(f"\n[{title}]")
+    print(f"{'':<14}" + "".join(f"{header:>10}" for header in columns))
+    for name, values in table.items():
+        cells = [format(values[key], value_format) for key, value_format in columns.values()]
+        print(f"{name:<14}" + "".join(f"{cell:>10}" for cell in cells))
+
+
+def interval_text(mean: float, low: float, high: float) -> str:
+    """값과 구간을 "+0.123 [+0.100, +0.150]" 모양으로 적는다"""
+    return f"{mean:+.3f} [{low:+.3f}, {high:+.3f}]"

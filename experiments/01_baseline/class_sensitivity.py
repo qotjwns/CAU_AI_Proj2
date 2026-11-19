@@ -33,14 +33,14 @@ import argparse
 import csv
 
 from mivlm.analysis.class_sensitivity import (
-    ONE_N, TRANSITIONS, class_pairs, class_values, difference_verdict, direction_verdict, explained_variance,
+    ONE_N, RUN_ROLES, TRANSITIONS, class_pairs, class_values, difference_verdict, direction_verdict, explained_variance,
     leave_one_image_out, mean_interval, rank_correlation_interval, ranking_verdict, shared_images, without_images,
 )
 from mivlm.config import PREDICTIONS_DIR, TABLES_DIR
 from mivlm.evaluation.metrics import ONE_N_VARIANTS, load_rows
+from mivlm.evaluation.report import interval_text, print_class_table
 
 EXPERIMENT = "01_baseline"
-ROLES = {"qwen2.5-vl-3b": "주 분석", "qwen2.5-vl-7b": "모델 견고성 분석", "qwen2.5-vl-3b_float32": "정밀도 민감도 분석"}
 CONTRASTS = [("PPN", "PNP"), ("PPN", "NPP"), ("PNP", "NPP")]  # 자리끼리의 비교 세 쌍
 CONTRAST_LEVEL = 1 - 0.05 / len(CONTRASTS)  # 세 쌍을 같이 보므로 구간을 넓힌다 (98.3%)
 LOIO_KEYS = [f"margin_drop_{ONE_N}", f"yes_rate_drop_{ONE_N}", f"auroc_{ONE_N}"]  # 이미지 한 장을 뺀 범위를 적을 값
@@ -49,19 +49,6 @@ LIMITS = """[한계]
   구간은 클래스를 단위로 다시 뽑아 만든다. 단위가 적어(클래스 20개) 실제보다 조금 좁을 수 있다.
   클래스 하나의 값에는 구간이 없다. 이미지 8장을 여러 케이스가 돌려 써서 타당한 구간을 만들 수 없기 때문이다.
   세 실행(3B bf16, 7B bf16, 3B float32)은 같은 케이스를 돌린 것이라, 판정이 일치해도 독립된 재현이 아니다."""
-
-
-def print_class_table(title: str, table: dict[str, dict], columns: dict[str, tuple[str, str]]) -> None:
-    """행은 클래스, 열은 columns인 표를 출력한다. columns: {열 이름: (class_values의 키, 값의 형식)}"""
-    print(f"\n[{title}]")
-    print(f"{'':<14}" + "".join(f"{header:>10}" for header in columns))
-    for name, values in table.items():
-        cells = [format(values[key], value_format) for key, value_format in columns.values()]
-        print(f"{name:<14}" + "".join(f"{cell:>10}" for cell in cells))
-
-
-def interval_text(mean: float, low: float, high: float) -> str:
-    return f"{mean:+.3f} [{low:+.3f}, {high:+.3f}]"
 
 
 def print_class_means(table: dict[str, dict], unshared: dict[str, dict]) -> None:
@@ -131,9 +118,9 @@ def main() -> None:
     shared = shared_images(pairs_by_class)
     unshared_pairs = {name: without_images(pairs, shared) for name, pairs in pairs_by_class.items()}
     unshared = {name: class_values(pairs) for name, pairs in unshared_pairs.items() if pairs}
-    ranges = {name: leave_one_image_out(pairs_by_class[name]) for name in table}
+    ranges = {name: leave_one_image_out(pairs_by_class[name], class_values) for name in table}
 
-    print(f"{'=' * 20} {args.run}: {ROLES.get(args.run, '역할을 정하지 않은 실행')} {'=' * 20}")
+    print(f"{'=' * 20} {args.run}: {RUN_ROLES.get(args.run, '역할을 정하지 않은 실행')} {'=' * 20}")
     print(f"케이스 {len(rows)}개, 클래스 {len(table)}개, pair {len(all_pairs)}개")
     print(f"두 클래스가 같이 쓰는 이미지 {len(shared)}장. 그 이미지가 든 pair를 빼면 "
           f"pair {sum(len(pairs) for pairs in unshared_pairs.values())}개, 클래스 {len(unshared)}개가 남는다 "

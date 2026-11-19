@@ -138,7 +138,7 @@ def test_without_images_drops_whole_pairs_so_that_ppp_and_its_variants_stay_toge
 
 def test_leave_one_image_out_gives_the_range_over_the_images_that_leave_some_pair():
     # 이미지 1, 2를 빼면 pair가 남지 않아 건너뛴다. 3이나 9를 빼면 pair 2만, 4나 8을 빼면 pair 1만 남는다
-    ranges = leave_one_image_out(class_pairs(_cat_rows())["cat"])
+    ranges = leave_one_image_out(class_pairs(_cat_rows())["cat"], class_values)
 
     assert ranges["n_pairs"] == (1, 1)
     assert ranges["margin_drop_PPN"] == (1.0, 3.0)  # pair 2만: 1.0, pair 1만: 3.0

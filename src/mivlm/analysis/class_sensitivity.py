@@ -27,6 +27,8 @@ ONE_N = "1N"  # N이 1장인 세 변형(PPN, PNP, NPP)을 합친 것의 이름
 TRANSITIONS = ["Yes->No", "Yes->Yes", "No->No", "No->Yes"]  # (PPP에서의 답)->(N을 넣은 변형에서의 답)
 N_DRAWS = 10_000  # 클래스를 다시 뽑는 횟수
 SEED = 0  # 다시 뽑는 순서를 정하는 seed. 고정해서 같은 입력이면 같은 구간이 나오게 한다
+# 분석에서 실행마다 맡는 역할. 주 분석의 판정이 기준이고, 나머지는 같은 판정이 나오는지를 본다
+RUN_ROLES = {"qwen2.5-vl-3b": "주 분석", "qwen2.5-vl-7b": "모델 견고성 분석", "qwen2.5-vl-3b_float32": "정밀도 민감도 분석"}
 NO_DIFFERENCE = (0.45, 0.55)  # 클래스 내부 AUROC의 평균이 이 범위 안이면 "순위로는 실질적으로 구분하지 못한다"로 본다
 
 
@@ -96,14 +98,15 @@ def without_images(pairs: list[dict], image_ids: set[int]) -> list[dict]:
     return [pair for pair in pairs if not pair_images(pair) & image_ids]
 
 
-def leave_one_image_out(pairs: list[dict]) -> dict[str, tuple[float, float]]:
-    """이미지 한 장을 뺄 때마다 class_values를 다시 계산해, 값마다 (최솟값, 최댓값)을 돌려준다
+def leave_one_image_out(pairs: list[dict], values_of) -> dict[str, tuple[float, float]]:
+    """이미지 한 장을 뺄 때마다 값을 다시 계산해, 값마다 (최솟값, 최댓값)을 돌려준다
 
+    values_of: pair 목록을 받아 {이름: 값}을 돌려주는 함수. 예: class_values
     그 pair들에 나오는 이미지마다, 그 이미지가 든 pair를 통째로 빼고 계산한다. 뺐더니 pair가 남지 않는 이미지는 건너뛴다.
     구간이 아니다. 이미지 한 장에 값이 얼마나 좌우되는지를 보는 범위다.
     """
     images = sorted(set().union(*(pair_images(pair) for pair in pairs)))
-    recomputed = [class_values(kept) for image_id in images if (kept := without_images(pairs, {image_id}))]
+    recomputed = [values_of(kept) for image_id in images if (kept := without_images(pairs, {image_id}))]
     return {key: (min(values[key] for values in recomputed), max(values[key] for values in recomputed))
             for key in recomputed[0]}
 

@@ -130,7 +130,7 @@ def main() -> None:
     table = {name: class_values(pairs) for name, pairs in pairs_by_class.items()}
     table = dict(sorted(table.items(), key=lambda item: -item[1]["mean_margin_PPP"]))  # PPP margin이 높은 클래스부터
     all_pairs = [pair for pairs in pairs_by_class.values() for pair in pairs]
-    ranges = {name: leave_one_image_out(pairs_by_class[name])[f"auroc_{ONE_N}"] for name in table}
+    ranges = {name: leave_one_image_out(pairs_by_class[name], class_values)[f"auroc_{ONE_N}"] for name in table}
     subtitle = f"{args.run}, {len(table)} classes, {len(all_pairs)} pairs, classes sorted by PPP margin"
 
     plt.rcParams.update(STYLE)
