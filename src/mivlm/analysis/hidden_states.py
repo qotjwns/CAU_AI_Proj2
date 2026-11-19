@@ -4,6 +4,11 @@ position id 꺼내기: 모델이 각 토큰의 위치로 쓰는 번호
 """
 import torch
 
+# "같다"의 기준: Relative L2(차이의 크기 / 원래 크기)가 이 값보다 작으면 같은 벡터로 본다.
+# 반올림 오차 수준의 차이는 넘기고, 앞의 이미지가 달라서 생기는 실제 차이는 걸러내도록 그 둘 사이의 값으로 정했다.
+# 이 기준을 넘는 device와 dtype의 조합에서는 벡터 비교 결과를 그대로 쓸 수 없다 (그때는 float32로 돌린다)
+SAME_WITHIN = 1e-3
+
 
 def extract_hidden_states(model, inputs) -> dict:
     """입력 하나를 forward 한 번 돌려 모든 층의 hidden state와 답변 위치의 logit을 돌려준다 (답은 생성하지 않는다)

@@ -21,3 +21,15 @@ def print_table(title: str, summaries: dict[str, dict]) -> None:
     print(f"{'':<18}" + "".join(f"{column:>16}" for column in COLUMNS))
     for name, summary in summaries.items():
         print(f"{name:<18}" + "".join(f"{format_value(column, summary[column]):>16}" for column in COLUMNS))
+
+
+def print_layer_table(title: str, columns: dict, value_format: str) -> None:
+    """행은 층, 열은 columns의 이름인 표를 출력한다
+
+    columns: {열 이름: 층마다의 값, shape (층 수,)인 텐서}
+    value_format: 값의 형식. 예: ".5f"
+    """
+    print(f"\n[{title}]")
+    print("layer" + "".join(f"{name:>10}" for name in columns))
+    for layer in range(len(next(iter(columns.values())))):
+        print(f"{layer:>5}" + "".join(f"{values[layer].item():>10{value_format}}" for values in columns.values()))

@@ -11,6 +11,7 @@ import torch
 
 from mivlm.analysis.hidden_states import compare_hidden_states, extract_hidden_states
 from mivlm.data.cases import load_cases
+from mivlm.evaluation.report import print_layer_table
 from mivlm.models.inference import case_messages, image_token_spans, prepare_inputs, single_image_messages
 from mivlm.models.loading import load_model
 
@@ -30,14 +31,6 @@ DIFFERENT_IMAGES = [  # 서로 다른 이미지: 토큰 수가 달라서 평균�
     ("자리 3: P3(PPP)와 N1(PPN)     (이미지 자체가 다름)", ("PPP", 3), ("PPN", 3)),
     ("자리 1: P1(PPP)과 N1(NPP)     (이미지 자체가 다름)", ("PPP", 1), ("NPP", 1)),
 ]
-
-
-def print_table(title: str, columns: dict[int, torch.Tensor], value_format: str) -> None:
-    """행은 층, 열은 비교 번호. columns: {비교 번호: 층마다의 값, shape (층 수,)}"""
-    print(f"\n[{title}]")
-    print("layer" + "".join(f"{number:>10}" for number in columns))
-    for layer in range(len(next(iter(columns.values())))):
-        print(f"{layer:>5}" + "".join(f"{values[layer].item():>10{value_format}}" for values in columns.values()))
 
 
 def main() -> None:
@@ -81,11 +74,11 @@ def main() -> None:
             metrics[number] = {"cosine_of_means": means}
 
     same = range(1, len(SAME_IMAGE) + 1)
-    print_table("1. 토큰별 유사도: 토큰끼리 cosine을 구한 뒤 평균",
+    print_layer_table("1. 토큰별 유사도: 토큰끼리 cosine을 구한 뒤 평균",
                 {number: metrics[number]["token_cosine"].mean(dim=1) for number in same}, ".5f")
-    print_table("2. 평균끼리의 유사도: 토큰을 먼저 평균 낸 벡터끼리의 cosine",
+    print_layer_table("2. 평균끼리의 유사도: 토큰을 먼저 평균 낸 벡터끼리의 cosine",
                 {number: values["cosine_of_means"] for number, values in metrics.items()}, ".5f")
-    print_table("3. Relative L2: 차이의 크기 / 원래 크기",
+    print_layer_table("3. Relative L2: 차이의 크기 / 원래 크기",
                 {number: metrics[number]["relative_l2"] for number in same}, ".4f")
 
 

@@ -15,6 +15,7 @@ import pytest
 import torch
 from huggingface_hub import try_to_load_from_cache
 
+from mivlm.analysis.hidden_states import SAME_WITHIN
 from mivlm.analysis.pair_record import build_pair_record, observe_case, pair_summary
 from mivlm.analysis.pair_store import save_pair_record
 from mivlm.config import CASES_JSONL, COCO_IMAGE_DIR, load_models_config
@@ -26,10 +27,6 @@ from mivlm.models.loading import load_model
 MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
 # 다른 dtype으로 돌리려면: MIVLM_TEST_DTYPE=float32 pytest <이 파일>. 주지 않으면 device의 기본값 (CUDA, MPS는 bfloat16)
 DTYPE = os.environ.get("MIVLM_TEST_DTYPE")
-# "같다"의 기준: Relative L2(차이의 크기 / 원래 크기)가 이 값보다 작으면 같은 벡터로 본다.
-# 반올림 오차 수준의 차이는 넘기고, 앞의 이미지가 달라서 생기는 실제 차이는 걸러내도록 그 둘 사이의 값으로 정했다.
-# 이 기준을 넘는 device와 dtype의 조합에서는 벡터 비교 결과를 그대로 쓸 수 없다 (그때는 float32로 돌린다)
-SAME_WITHIN = 1e-3
 PAIR = "group_05_cat_4"
 
 pytestmark = pytest.mark.skipif(
