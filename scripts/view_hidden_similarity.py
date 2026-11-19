@@ -52,14 +52,19 @@ def main() -> None:
     planned["P1 alone"] = ([p1], single_image_messages({"image_id": p1, "object": cases["PPP"]["object"]}))
 
     model, processor = load_model(MODEL_NAME)
+    (yes_id,) = processor.tokenizer.encode("Yes", add_special_tokens=False)
+    (no_id,) = processor.tokenizer.encode("No", add_special_tokens=False)
     images = {}  # (입력 이름, 자리) -> (image_id, 그 이미지의 벡터들 shape (층 수, 토큰 수, 벡터 크기))
     for name, (image_ids, messages) in planned.items():
         inputs = prepare_inputs(processor, messages)
         spans = image_token_spans(inputs["input_ids"][0], processor.image_token_id)
-        hidden = extract_hidden_states(model, inputs)["hidden_states"]
+        extracted = extract_hidden_states(model, inputs)
+        hidden = extracted["hidden_states"]
+        margin = (extracted["logits"][yes_id] - extracted["logits"][no_id]).item()  # 양수면 Yes
         for slot, (image_id, (start, end)) in enumerate(zip(image_ids, spans), start=1):
             images[name, slot] = (image_id, hidden[:, start:end])
-        print(f"{name}: images {image_ids}, tokens per image {[end - start for start, end in spans]}")
+        print(f"{name}: images {image_ids}, tokens per image {[end - start for start, end in spans]}, "
+              f"margin {margin:+.3f}")
 
     # 비교마다 번호를 붙인다. 표의 열 이름으로 쓴다
     print(f"\n[비교 목록] {args.pair}, {MODEL_NAME}")
