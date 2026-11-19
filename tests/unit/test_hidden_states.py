@@ -99,18 +99,28 @@ def test_identical_inputs_have_similarity_1_and_no_difference():
 
     result = compare_hidden_states(a, a.clone())
 
-    assert result["token_cosine"].tolist() == pytest.approx([1.0])
+    assert result["token_cosine"].flatten().tolist() == pytest.approx([1.0, 1.0])
     assert result["cosine_of_means"].tolist() == pytest.approx([1.0])
     assert result["relative_l2"].tolist() == [0.0]
 
 
-def test_each_metric_has_one_value_per_layer():
-    a = torch.arange(60.0).reshape(3, 4, 5)
+def test_token_cosine_is_per_token_and_the_others_are_per_layer():
+    a = torch.arange(60.0).reshape(3, 4, 5)  # 층 3, 토큰 4, 벡터 크기 5
 
     result = compare_hidden_states(a, a.flip(1))
 
-    for name in ["token_cosine", "cosine_of_means", "relative_l2"]:
-        assert result[name].shape == (3,), name
+    assert result["token_cosine"].shape == (3, 4)
+    assert result["cosine_of_means"].shape == (3,)
+    assert result["relative_l2"].shape == (3,)
+
+
+def test_token_cosine_keeps_token_order():
+    a = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+    b = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]])  # 첫 토큰은 같고 둘째 토큰만 다르다
+
+    result = compare_hidden_states(a, b)
+
+    assert result["token_cosine"].flatten().tolist() == pytest.approx([1.0, 0.0])
 
 
 def test_swapped_tokens_differ_token_by_token_but_not_on_average():
@@ -120,7 +130,7 @@ def test_swapped_tokens_differ_token_by_token_but_not_on_average():
 
     result = compare_hidden_states(a, b)
 
-    assert result["token_cosine"].tolist() == pytest.approx([0.0])
+    assert result["token_cosine"].flatten().tolist() == pytest.approx([0.0, 0.0])
     assert result["cosine_of_means"].tolist() == pytest.approx([1.0])
 
 
@@ -129,7 +139,7 @@ def test_cosine_ignores_scale_but_relative_l2_does_not():
 
     result = compare_hidden_states(a, 2 * a)
 
-    assert result["token_cosine"].tolist() == pytest.approx([1.0])
+    assert result["token_cosine"].flatten().tolist() == pytest.approx([1.0, 1.0])
     assert result["cosine_of_means"].tolist() == pytest.approx([1.0])
     assert result["relative_l2"].tolist() == pytest.approx([1.0])  # 차이 a의 크기 / a의 크기
 
@@ -142,6 +152,7 @@ def test_layers_are_compared_separately():
 
     result = compare_hidden_states(a, b)
 
-    assert result["token_cosine"].tolist() == pytest.approx([1.0, 0.0])
+    assert result["token_cosine"][0].tolist() == pytest.approx([1.0, 1.0])
+    assert result["token_cosine"][1].tolist() == pytest.approx([0.0, 0.0])
     assert result["relative_l2"][0].item() == 0.0
     assert result["relative_l2"][1].item() > 0

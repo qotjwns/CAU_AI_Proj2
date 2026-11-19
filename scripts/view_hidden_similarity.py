@@ -82,7 +82,7 @@ def main() -> None:
 
     same = range(1, len(SAME_IMAGE) + 1)
     print_table("1. 토큰별 유사도: 토큰끼리 cosine을 구한 뒤 평균",
-                {number: metrics[number]["token_cosine"] for number in same}, ".5f")
+                {number: metrics[number]["token_cosine"].mean(dim=1) for number in same}, ".5f")
     print_table("2. 평균끼리의 유사도: 토큰을 먼저 평균 낸 벡터끼리의 cosine",
                 {number: values["cosine_of_means"] for number, values in metrics.items()}, ".5f")
     print_table("3. Relative L2: 차이의 크기 / 원래 크기",
