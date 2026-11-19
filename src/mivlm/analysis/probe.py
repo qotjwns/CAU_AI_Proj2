@@ -13,6 +13,7 @@ from pathlib import Path
 
 import torch
 
+from mivlm.data.cases import image_linked_classes
 from mivlm.run_files import read_results
 
 # 정규화 세기. 결과를 보고 고르지 않도록 하나로 고정한다. 벡터의 차원이 학습 케이스 수보다 많아서 0으로 두지 않는다
@@ -49,27 +50,9 @@ def class_folds(cases: list[dict], n_folds: int = N_FOLDS) -> dict[str, int]:
     덩어리를 큰 것부터 차례로, 그때 클래스 수가 가장 적은 묶음에 넣는다.
     무작위가 없고 클래스가 처음 나온 순서만 따르므로, 같은 케이스 파일이면 결과가 항상 같다.
     """
-    group_of = {}  # 클래스 -> 그 클래스가 속한 덩어리. 같은 덩어리의 클래스들은 같은 set을 가리킨다
-    for case in cases:
-        group_of.setdefault(case["object"], {case["object"]})
-
-    classes_of_image = {}  # 이미지 -> 그 이미지를 쓰는 클래스들
-    for case in cases:
-        for image_id in case["image_ids"]:
-            classes_of_image.setdefault(image_id, set()).add(case["object"])
-    for classes in classes_of_image.values():
-        merged = set().union(*(group_of[name] for name in classes))
-        for name in merged:
-            group_of[name] = merged
-
-    groups = []  # 덩어리마다 한 번씩, 처음 나온 순서
-    for group in group_of.values():
-        if not any(group is seen for seen in groups):
-            groups.append(group)
-
     sizes = [0] * n_folds
     folds = {}
-    for group in sorted(groups, key=len, reverse=True):  # 크기가 같으면 처음 나온 순서를 유지한다
+    for group in sorted(image_linked_classes(cases), key=len, reverse=True):  # 크기가 같으면 처음 나온 순서를 유지한다
         fold = sizes.index(min(sizes))
         sizes[fold] += len(group)
         for name in group:

@@ -81,3 +81,29 @@ def case_pairs(cases: list[dict]) -> list[dict]:
     for case in cases:
         pairs.setdefault(f"{case['group_id']}_{case['pair_id']}", {})[case["variant"]] = case
     return [{"pair": pair, "cases": variants} for pair, variants in pairs.items()]
+
+
+def image_linked_classes(cases: list[dict]) -> list[set[str]]:
+    """이미지를 같이 쓰는 클래스끼리 한 덩어리로 묶는다: 덩어리(클래스 이름의 set)의 목록, 처음 나온 순서
+
+    a와 b가 이미지 하나를 같이 쓰고 b와 c가 다른 이미지를 같이 쓰면 a, b, c가 한 덩어리다.
+    어떤 클래스와도 이미지를 같이 쓰지 않는 클래스는 혼자 덩어리가 된다. 서로 다른 덩어리는 이미지를 하나도 공유하지 않는다.
+    """
+    group_of = {}  # 클래스 -> 그 클래스가 속한 덩어리. 같은 덩어리의 클래스들은 같은 set을 가리킨다
+    for case in cases:
+        group_of.setdefault(case["object"], {case["object"]})
+
+    classes_of_image = {}  # 이미지 -> 그 이미지를 쓰는 클래스들
+    for case in cases:
+        for image_id in case["image_ids"]:
+            classes_of_image.setdefault(image_id, set()).add(case["object"])
+    for classes in classes_of_image.values():
+        merged = set().union(*(group_of[name] for name in classes))
+        for name in merged:
+            group_of[name] = merged
+
+    groups = []  # 덩어리마다 한 번씩, 처음 나온 순서
+    for group in group_of.values():
+        if not any(group is seen for seen in groups):
+            groups.append(group)
+    return groups

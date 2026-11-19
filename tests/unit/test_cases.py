@@ -2,7 +2,7 @@
 src/mivlm/data/cases.py 단위 테스트
 pytest tests/unit/test_cases.py -v
 """
-from mivlm.data.cases import case_pairs, per_image_queries, pilot_cases, single_image_items
+from mivlm.data.cases import case_pairs, image_linked_classes, per_image_queries, pilot_cases, single_image_items
 
 VARIANTS = ["PPP", "PPN", "PNN", "NNN", "NPP", "PNP"]
 CLASSES = ["person", "dining table", "chair", "couch", "cat", "train", "bus"]
@@ -81,3 +81,14 @@ def test_case_pairs_group_six_variants_per_pair_in_file_order():
         assert list(item["cases"]) == VARIANTS
         for variant, case in item["cases"].items():
             assert case["case_id"] == f"{item['pair']}_{variant}"
+
+
+# -------------------------------------------------------- image_linked_classes
+
+
+def test_classes_that_share_images_directly_or_through_another_class_form_one_group():
+    # b와 c가 이미지 3을 같이 쓰고, c와 d가 이미지 5를 같이 쓴다. b, c, d는 한 덩어리다
+    images = [("a", [1, 2]), ("b", [3, 4]), ("c", [3, 5]), ("d", [5, 6]), ("a", [2, 7]), ("e", [8])]
+    cases = [{"object": name, "image_ids": image_ids} for name, image_ids in images]
+
+    assert image_linked_classes(cases) == [{"a"}, {"b", "c", "d"}, {"e"}]  # 처음 나온 순서
