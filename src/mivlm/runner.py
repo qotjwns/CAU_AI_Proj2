@@ -49,6 +49,11 @@ def _git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=PROJECT_ROOT, capture_output=True, text=True, check=True).stdout.strip()
 
 
+def git_state() -> dict:
+    """결과를 만든 코드의 상태: commit hash와, 커밋하지 않은 변경이 있었는지"""
+    return {"commit": _git("rev-parse", "HEAD"), "dirty": _git("status", "--porcelain") != ""}
+
+
 def build_meta(experiment: str, args: argparse.Namespace, n_items: int, model, processor, question: str) -> dict:
     """실행 조건 기록. 결과를 좌우하는 조건을 모두 담는다"""
     repo_id = load_models_config()[args.model]
@@ -86,7 +91,7 @@ def build_meta(experiment: str, args: argparse.Namespace, n_items: int, model, p
             "transformers": _package_version("transformers"),
             "platform": platform.platform(),
         },
-        "git": {"commit": _git("rev-parse", "HEAD"), "dirty": _git("status", "--porcelain") != ""},
+        "git": git_state(),
     }
 
 
