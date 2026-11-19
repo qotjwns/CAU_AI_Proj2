@@ -1,5 +1,5 @@
 """
-hidden state 꺼내기: 모델 안에서 층마다 토큰별로 만들어지는 벡터
+hidden state 꺼내기와 비교: 모델 안에서 층마다 토큰별로 만들어지는 벡터
 """
 import torch
 
@@ -20,4 +20,21 @@ def extract_hidden_states(model, inputs) -> dict:
         # out.hidden_states는 층마다 (1, 토큰 수, 벡터 크기)인 tuple이다. 입력이 하나이므로 맨 앞 차원을 없애고 쌓는다
         "hidden_states": torch.stack([layer[0] for layer in out.hidden_states]).float().cpu(),
         "logits": out.logits[0, -1].float().cpu(),
+    }
+
+
+def compare_hidden_states(a: torch.Tensor, b: torch.Tensor) -> dict[str, torch.Tensor]:
+    """같은 이미지의 벡터를 두 조건에서 비교한다. 층마다 값 하나씩이고, 지표마다 shape (층 수,)
+
+    a, b: shape (층 수, 토큰 수, 벡터 크기). 같은 이미지라서 토큰 수가 같고, t번째 토큰끼리 짝이 된다
+    token_cosine: 토큰끼리 cosine similarity를 구한 뒤 평균. 토큰 하나하나가 얼마나 같은 방향인가
+    cosine_of_means: 토큰을 먼저 평균 낸 벡터끼리의 cosine similarity. 이미지 전체의 대표 벡터가 얼마나 같은가.
+        토큰별 차이가 평균에서 서로 상쇄되면 token_cosine보다 높게 나온다
+    relative_l2: 차이의 크기 / a의 크기. cosine이 못 보는 벡터 크기의 차이까지 잡는다
+    """
+    cosine = torch.nn.functional.cosine_similarity(a, b, dim=-1)  # (층 수, 토큰 수)
+    return {
+        "token_cosine": cosine.mean(dim=1),
+        "cosine_of_means": torch.nn.functional.cosine_similarity(a.mean(dim=1), b.mean(dim=1), dim=-1),
+        "relative_l2": (a - b).flatten(1).norm(dim=1) / a.flatten(1).norm(dim=1),
     }
