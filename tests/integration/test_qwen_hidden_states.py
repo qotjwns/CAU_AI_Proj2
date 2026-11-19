@@ -2,6 +2,7 @@
 실제 Qwen2.5-VL로 hidden state와 position id 꺼내기 검사 (이미지 3장 케이스 하나, 기본 3B)
 pytest tests/integration/test_qwen_hidden_states.py -v -s
 MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_qwen_hidden_states.py -v -s     # 다른 모델로
+MIVLM_TEST_DTYPE=float32 pytest tests/integration/test_qwen_hidden_states.py -v -s           # 다른 dtype으로
 """
 import os
 
@@ -17,6 +18,8 @@ from mivlm.models.loading import load_model
 
 # 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
 MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
+# 다른 dtype으로 돌리려면: MIVLM_TEST_DTYPE=float32 pytest <이 파일>. 주지 않으면 device의 기본값 (CUDA, MPS는 bfloat16)
+DTYPE = os.environ.get("MIVLM_TEST_DTYPE")
 CASE_ID = "group_01_person_1_PPN"
 
 pytestmark = pytest.mark.skipif(
@@ -30,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def loaded():
-    return load_model(MODEL_NAME)
+    return load_model(MODEL_NAME, getattr(torch, DTYPE) if DTYPE else None)
 
 
 @pytest.fixture(scope="module")

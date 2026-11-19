@@ -2,9 +2,12 @@
 실제 Qwen2.5-VL로 pair 하나의 기록을 만들어 검사 (forward 6번 + 생성 6번, 기본 3B)
 pytest tests/integration/test_qwen_pair_record.py -v -s
 MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_qwen_pair_record.py -v -s     # 다른 모델로
+MIVLM_TEST_DTYPE=float32 pytest tests/integration/test_qwen_pair_record.py -v -s           # 다른 dtype으로
 
 pair는 group_05_cat_4를 쓴다. P2와 N1의 토큰 수가 같아서(391개) 위치가 통제되는 비교가 들어 있다.
-"완전히 같다"는 기준은 3B를 Mac(MPS, bf16)에서 돌려 관측한 것이다. 다른 기기나 모델에서 실패하면 출력된 값을 먼저 본다.
+벡터가 "같다"는 Relative L2가 SAME_WITHIN보다 작은 것으로 판정한다. CUDA의 bf16에서는 이 기준을 넘는다
+(이유는 test_qwen_hidden_state_causality.py의 설명 참고). 그런 device와 dtype에서는 벡터 비교를 float32로 해야 한다.
+logit이 infer와 같은지는 완전히 같은 값인지로 본다. 실패하면 기준을 바꾸기 전에 출력된 값을 먼저 본다.
 """
 import os
 
@@ -21,6 +24,12 @@ from mivlm.models.loading import load_model
 
 # 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
 MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
+# 다른 dtype으로 돌리려면: MIVLM_TEST_DTYPE=float32 pytest <이 파일>. 주지 않으면 device의 기본값 (CUDA, MPS는 bfloat16)
+DTYPE = os.environ.get("MIVLM_TEST_DTYPE")
+# "같다"의 기준: Relative L2(차이의 크기 / 원래 크기)가 이 값보다 작으면 같은 벡터로 본다.
+# 반올림 오차 수준의 차이는 넘기고, 앞의 이미지가 달라서 생기는 실제 차이는 걸러내도록 그 둘 사이의 값으로 정했다.
+# 이 기준을 넘는 device와 dtype의 조합에서는 벡터 비교 결과를 그대로 쓸 수 없다 (그때는 float32로 돌린다)
+SAME_WITHIN = 1e-3
 PAIR = "group_05_cat_4"
 
 pytestmark = pytest.mark.skipif(
@@ -34,7 +43,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def loaded():
-    return load_model(MODEL_NAME)
+    return load_model(MODEL_NAME, getattr(torch, DTYPE) if DTYPE else None)
 
 
 @pytest.fixture(scope="module")
@@ -57,24 +66,23 @@ def find(record: dict, image: str, a_variant: str, b_variant: str) -> dict:
     return comparison
 
 
-def test_entry_0_is_identical_in_every_comparison(record):
-    # [0]은 첫 층에 들어가기 전의 벡터라서, 같은 이미지는 어느 입력의 어느 자리에 있든 같다
+def test_entry_0_is_the_same_in_every_comparison(record):
+    # [0]은 첫 층에 들어가기 전의 벡터라서, 같은 이미지는 어느 입력의 어느 자리에 있든 같아야 한다
     assert len(record["comparisons"]) == 12
     for comparison in record["comparisons"]:
         where = f"{comparison['image']}: {comparison['a']['variant']} vs {comparison['b']['variant']}"
 
-        assert comparison["relative_l2"][0].item() == 0.0, where
+        assert comparison["relative_l2"][0].item() < SAME_WITHIN, where
         assert torch.allclose(comparison["token_cosine"][0], torch.ones(()), atol=1e-5), where
 
 
-def test_same_prefix_reference_is_identical(record):
-    # P2는 PPP와 PPN에서 앞부분이 완전히 같다. 측정값을 그대로 남기고, 완전히 같은지는 따로 적는다
+def test_same_prefix_reference_is_the_same(record):
+    # P2는 PPP와 PPN에서 앞부분이 완전히 같으므로 벡터도 같아야 한다. 완전히 같은지(차이 0)는 출력만 한다
     summary = pair_summary(record)
     print(f"\nsame_prefix: max relative L2 {summary['same_prefix_max_relative_l2']}, "
           f"identical {summary['same_prefix_identical']}")
 
-    assert summary["same_prefix_max_relative_l2"] == 0.0
-    assert summary["same_prefix_identical"] is True
+    assert summary["same_prefix_max_relative_l2"] < SAME_WITHIN
 
 
 def test_token_index_and_position_ids_are_recorded_independently(record):

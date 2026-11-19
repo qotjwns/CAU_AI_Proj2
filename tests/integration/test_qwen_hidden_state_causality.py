@@ -2,13 +2,17 @@
 실제 Qwen2.5-VL에서 "앞부분이 같으면 그 앞부분의 hidden state도 같다"를 검사 (forward 9번, 기본 3B)
 pytest tests/integration/test_qwen_hidden_state_causality.py -v -s
 MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest tests/integration/test_qwen_hidden_state_causality.py -v -s     # 다른 모델로
+MIVLM_TEST_DTYPE=float32 pytest tests/integration/test_qwen_hidden_state_causality.py -v -s           # 다른 dtype으로
 
 모델은 각 토큰에서 앞쪽 토큰만 보므로, 두 입력이 어느 위치까지 같으면 그 위치까지의 벡터는 뒤가 달라도 같아야 한다.
 이것이 성립하면 이미지 토큰 구간, 추출 코드, "이미지 위치의 벡터는 질문을 모른다"는 전제가 함께 확인된다.
 "앞부분이 다르면 벡터가 다르다"는 구조가 보장하는 것이 아니라 측정할 대상이므로 여기서 판정하지 않는다.
 
-이미지 3장짜리 입력끼리는 완전히 같은지(torch.equal)로 판정한다.
-이미지 1장짜리 입력과의 비교만 범위로 판정한다. 이유는 test_single_image_input_matches_slot_1_within_rounding_error에 적었다.
+"같다"는 Relative L2가 SAME_WITHIN보다 작은 것으로 판정한다. 완전히 같은지(차이 0)는 device와 dtype에 따라 다르다.
+Mac(MPS, bf16)과 CUDA의 float32에서는 차이가 0이거나 반올림 수준이었고, CUDA의 bf16에서는 기준을 크게 넘었다.
+CUDA의 bf16에서는 같이 넣은 이미지가 다르면 vision encoder의 출력부터 달라지기 때문이다 (float32에서는 사라진다).
+그래서 이 테스트가 실패하는 device와 dtype에서는 벡터 비교를 float32로 해야 한다.
+같은 입력을 두 번 돌린 것만은 차이가 0인지 본다. 이미지 1장짜리 입력과의 비교는 따로 범위를 둔다.
 
 group_01_person pair 1의 이미지 P1, P2, P3, N1을 쓴다. 모든 비교의 차이를 출력하므로 -s를 붙여서 본다.
 """
@@ -28,6 +32,12 @@ from mivlm.models.loading import load_model
 
 # 다른 모델로 돌리려면 환경 변수로 이름을 준다. 예: MIVLM_TEST_MODEL=qwen2.5-vl-7b pytest <이 파일>
 MODEL_NAME = os.environ.get("MIVLM_TEST_MODEL", "qwen2.5-vl-3b")
+# 다른 dtype으로 돌리려면: MIVLM_TEST_DTYPE=float32 pytest <이 파일>. 주지 않으면 device의 기본값 (CUDA, MPS는 bfloat16)
+DTYPE = os.environ.get("MIVLM_TEST_DTYPE")
+# "같다"의 기준: Relative L2(차이의 크기 / 원래 크기)가 이 값보다 작으면 같은 벡터로 본다.
+# 반올림 오차 수준의 차이는 넘기고, 앞의 이미지가 달라서 생기는 실제 차이는 걸러내도록 그 둘 사이의 값으로 정했다.
+# 이 기준을 넘는 device와 dtype의 조합에서는 벡터 비교 결과를 그대로 쓸 수 없다 (그때는 float32로 돌린다)
+SAME_WITHIN = 1e-3
 PAIR = ("group_01_person", 1)  # (group_id, pair_id)
 
 pytestmark = pytest.mark.skipif(
@@ -41,7 +51,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def loaded():
-    return load_model(MODEL_NAME)
+    return load_model(MODEL_NAME, getattr(torch, DTYPE) if DTYPE else None)
 
 
 @pytest.fixture(scope="module")
@@ -80,8 +90,8 @@ def runs(loaded):
     return results
 
 
-def report(label: str, a: torch.Tensor, b: torch.Tensor) -> bool:
-    """두 벡터 묶음의 차이를 출력하고, 완전히 같은지 돌려준다
+def report(label: str, a: torch.Tensor, b: torch.Tensor) -> float:
+    """두 벡터 묶음의 차이를 출력하고, Relative L2가 가장 큰 층의 값을 돌려준다 (완전히 같으면 0)
 
     a, b: shape (층 수, 토큰 수, 벡터 크기). 층마다 계산해서 가장 나쁜 층의 값을 적는다.
     max abs diff: 값 하나하나의 차이 중 최댓값
@@ -95,7 +105,7 @@ def report(label: str, a: torch.Tensor, b: torch.Tensor) -> bool:
     print(f"\n{label}: max abs diff {max_abs.max().item():.3g}, "
           f"relative L2 {relative_l2.max().item():.3g} (layer {relative_l2.argmax().item()}), "
           f"min cosine {min_cosine.min().item():.6f} (layer {min_cosine.argmin().item()})")
-    return torch.equal(a, b)
+    return relative_l2.max().item()
 
 
 def shared_prefix(runs: dict, first: str, second: str, n_images: int) -> tuple[str, torch.Tensor, torch.Tensor]:
@@ -114,25 +124,26 @@ def shared_prefix(runs: dict, first: str, second: str, n_images: int) -> tuple[s
 
 
 def test_same_input_twice_gives_the_same_hidden_states(runs):
-    # 기준선: 같은 입력도 다르게 나온다면 나머지 비교는 의미가 없다
-    assert report("PPN vs PPN again, all tokens", runs["PPN"]["hidden"], runs["PPN again"]["hidden"])
+    # 기준선: 같은 입력도 다르게 나온다면 나머지 비교는 의미가 없다. 이것만은 차이가 0이어야 한다
+    assert report("PPN vs PPN again, all tokens", runs["PPN"]["hidden"], runs["PPN again"]["hidden"]) == 0
 
 
 def test_slot_1_does_not_depend_on_what_comes_after(runs):
     # 자리 1의 이미지 P1까지는 PPP, PPN, PNP가 모두 같다
-    different = [other for other in ["PPN", "PNP"] if not report(*shared_prefix(runs, "PPP", other, n_images=1))]
+    different = [other for other in ["PPN", "PNP"]
+                 if report(*shared_prefix(runs, "PPP", other, n_images=1)) >= SAME_WITHIN]
 
-    assert not different, f"PPP와 완전히 같지 않은 입력: {different}"
+    assert not different, f"PPP와 같지 않은 입력: {different}"
 
 
 def test_slots_1_and_2_do_not_depend_on_slot_3(runs):
     # PPP와 PPN은 세 번째 이미지만 다르다
-    assert report(*shared_prefix(runs, "PPP", "PPN", n_images=2))
+    assert report(*shared_prefix(runs, "PPP", "PPN", n_images=2)) < SAME_WITHIN
 
 
 def test_images_do_not_depend_on_the_question(runs):
     # PPN과 C는 이미지 3장이 같고 질문만 다르다. 질문은 이미지 뒤에 온다
-    assert report(*shared_prefix(runs, "PPN", "C", n_images=3))
+    assert report(*shared_prefix(runs, "PPN", "C", n_images=3)) < SAME_WITHIN
 
 
 def test_single_image_input_matches_slot_1_within_rounding_error(runs):
@@ -142,9 +153,8 @@ def test_single_image_input_matches_slot_1_within_rounding_error(runs):
     #   - 두 입력의 position id는 같고, 같은 입력을 두 번 돌리면 완전히 같다
     #   - 처음 몇 층은 완전히 같고, 중간의 한 층에서 아주 작게 시작해 층을 지나며 서서히 커진다
     # 그래서 내용이 아니라 입력 길이에 따라 계산이 다르게 처리되어 생기는 반올림 오차로 본다 (어느 연산인지는 찾지 않았다).
-    # 아래 범위는 그 오차보다 여유를 둔 값이고, 크게 어긋나는 것을 잡는 용도다.
-    # 오차가 "앞부분이 달라서 생기는 실제 차이"보다 작은지는 이 테스트가 판정하지 않는다.
-    # 다른 device(CUDA)에서도 같은 현상이 있는지는 확인하지 않았다.
+    # 아래 범위는 Mac(MPS, bf16)에서 관측한 그 오차보다 여유를 둔 값이고, 크게 어긋나는 것을 잡는 용도다.
+    # SAME_WITHIN보다 느슨하므로, 이 테스트의 통과는 "같다"가 아니라 "크게 다르지 않다"는 뜻이다.
     label, a, b = shared_prefix(runs, "PPP", "P1 alone", n_images=1)
     report(label, a, b)
     relative_l2 = (a - b).flatten(1).norm(dim=1) / a.flatten(1).norm(dim=1)  # 층마다
@@ -170,7 +180,7 @@ def test_layer_0_of_an_image_is_the_same_wherever_it_is(runs):
 
         a_start, a_end = a["spans"][first_slot - 1]
         b_start, b_end = b["spans"][second_slot - 1]
-        if not report(label, a["hidden"][:1, a_start:a_end], b["hidden"][:1, b_start:b_end]):
+        if report(label, a["hidden"][:1, a_start:a_end], b["hidden"][:1, b_start:b_end]) >= SAME_WITHIN:
             different.append(label)
 
-    assert not different, f"완전히 같지 않은 비교: {different}"
+    assert not different, f"같지 않은 비교: {different}"
