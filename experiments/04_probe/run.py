@@ -21,7 +21,7 @@ from mivlm.analysis.probe import (
     L2, N_FOLDS, class_folds, cross_validated_scores, load_pre_answer, presence_labels, slot_labels,
 )
 from mivlm.config import PREDICTIONS_DIR
-from mivlm.data.cases import load_cases
+from mivlm.data.cases import load_run_cases
 from mivlm.runner import git_state
 
 EXPERIMENT = "04_probe"
@@ -34,8 +34,9 @@ def main() -> None:
     parser.add_argument("run", help="outputs/predictions/03_hidden_states/ 아래의 실행 폴더 이름")
     args = parser.parse_args()
 
-    cases = load_cases()
-    rows, hidden = load_pre_answer(PREDICTIONS_DIR / SOURCE_EXPERIMENT / args.run, cases)
+    source_dir = PREDICTIONS_DIR / SOURCE_EXPERIMENT / args.run
+    cases = load_run_cases(source_dir)  # hidden state 실행이 쓴 풀의 케이스 (해시 확인)
+    rows, hidden = load_pre_answer(source_dir, cases)
     folds = class_folds(cases)
     fold_of_case = torch.tensor([folds[row["object"]] for row in rows])
     print(f"{args.run}: cases {len(rows)}, hidden {tuple(hidden.shape)}, classes per fold "

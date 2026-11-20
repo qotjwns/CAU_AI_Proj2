@@ -14,7 +14,7 @@ from mivlm.runner import parse_run_args, run_inference
 
 def main() -> None:
     args = parse_run_args("STEP 1 baseline 추론")
-    cases = load_cases()
+    cases = load_cases(args.pool)
     if args.pilot:
         cases = pilot_cases(cases)
     run_inference("01_baseline", args, cases, "case_id", case_messages, ALL_IMAGES_QUESTION)

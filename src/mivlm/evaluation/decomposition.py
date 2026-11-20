@@ -8,7 +8,7 @@ B는 이미지를 1장씩 따로 물은 결과, C는 3장을 넣고 자리를 �
 from collections import Counter
 
 from mivlm.config import PREDICTIONS_DIR
-from mivlm.data.cases import load_cases, load_pools, per_image_queries, single_image_items
+from mivlm.data.cases import load_cases, load_pools, per_image_queries, shared_run_pool, single_image_items
 from mivlm.evaluation.metrics import ONE_N_VARIANTS, join_results, load_rows, summarize
 from mivlm.run_files import read_results
 
@@ -77,14 +77,18 @@ def load_case_rows(run: str) -> tuple[dict[str, list[dict]], list[dict], list[di
             B와 C는 이미지별 답을 AND로 합친 것이다
         b_image_rows: B의 이미지별 답 (이미지 1장 항목 320개와 합친 행)
         c_image_rows: C의 이미지별 답 (자리별 질문 항목 7,200개와 합친 행)
+    A, B, C의 meta.json이 같은 풀과 같은 데이터 해시를 가리켜야 하고, 지금 파일과도 같아야 한다 (shared_run_pool).
+    결과는 id로 케이스에 붙인다 (join_results). 행 순서에 기대지 않는다.
     """
-    cases = load_cases()
-    b_image_rows = join_results(single_image_items(load_pools()),
-                                read_results(PREDICTIONS_DIR / "02_decomposition" / "b_single_image" / run), "item_id")
-    c_image_rows = join_results(per_image_queries(cases),
-                                read_results(PREDICTIONS_DIR / "02_decomposition" / "c_per_image_answers" / run), "query_id")
+    a_dir = PREDICTIONS_DIR / "01_baseline" / run
+    b_dir = PREDICTIONS_DIR / "02_decomposition" / "b_single_image" / run
+    c_dir = PREDICTIONS_DIR / "02_decomposition" / "c_per_image_answers" / run
+    pool = shared_run_pool([a_dir, b_dir, c_dir])
+    cases = load_cases(pool)
+    b_image_rows = join_results(single_image_items(load_pools(pool)), read_results(b_dir), "item_id")
+    c_image_rows = join_results(per_image_queries(cases), read_results(c_dir), "query_id")
     case_rows = {
-        "A": load_rows(PREDICTIONS_DIR / "01_baseline" / run),
+        "A": load_rows(a_dir),
         "B": combine_single_image(cases, b_image_rows),
         "C": combine_per_image(cases, c_image_rows),
     }

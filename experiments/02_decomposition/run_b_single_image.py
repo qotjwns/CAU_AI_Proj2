@@ -11,7 +11,7 @@ from mivlm.runner import parse_run_args, run_inference
 
 def main() -> None:
     args = parse_run_args("분해 실험 B: 이미지 1장씩 추론")
-    items = single_image_items(load_pools())
+    items = single_image_items(load_pools(args.pool))
     if args.pilot:
         # 항목이 클래스마다 P 8장, N 8장 순서라서, 8개마다 하나씩 고르면 클래스별 첫 P와 첫 N이 된다
         items = items[::8]

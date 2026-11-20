@@ -34,7 +34,7 @@ ONE_N_VARIANTS = ["PPN", "PNP", "NPP"]  # N이 하나인 변형
 def load_pre_answer(run_dir: Path, cases: list[dict]) -> tuple[list[dict], torch.Tensor]:
     """hidden state 실행 폴더의 pair 기록에서 케이스마다의 답변 위치 벡터를 모은다
 
-    cases: load_cases()의 결과. 케이스의 클래스(object)와 변형(variant)을 case_id로 찾아 붙인다
+    cases: 그 실행이 쓴 풀의 케이스 (mivlm.data.cases.load_run_cases(run_dir)). 클래스, 변형, 이미지를 case_id로 찾아 붙인다
     반환: (rows, hidden). 둘은 같은 순서다 (저장된 순서)
         rows: 케이스마다 {"case_id", "object", "variant", "image_ids", "logit_margin"}
         hidden: shape (케이스 수, 층 수 + 1, 벡터 크기), float32

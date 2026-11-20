@@ -91,7 +91,7 @@ def report_baseline_margins(run_dir: Path, results: list[dict]) -> None:
 
 def main() -> None:
     args = parse_run_args("STEP 5 hidden state 저장")
-    pairs = case_pairs(load_cases())
+    pairs = case_pairs(load_cases(args.pool))
     if args.pilot:
         pairs = [item for item in pairs if item["pair"] in PILOT_PAIRS]
         if len(pairs) != len(PILOT_PAIRS):

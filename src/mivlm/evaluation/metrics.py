@@ -5,7 +5,7 @@ import statistics
 from collections import Counter
 from pathlib import Path
 
-from mivlm.data.cases import load_cases, pilot_cases
+from mivlm.data.cases import load_run_cases, pilot_cases
 from mivlm.run_files import read_meta, read_results
 
 BOUNDARY_MARGIN = 0.25  # |margin|이 이 값 이하면 경계 케이스로 센다. bf16 간격(0.125) 두 칸
@@ -34,8 +34,11 @@ def join_results(items: list[dict], results: list[dict], id_key: str) -> list[di
 
 
 def load_rows(run_dir: Path) -> list[dict]:
-    """A(01_baseline) 실행 폴더의 결과를 케이스와 합친 행으로 읽는다. 파일럿 실행이면 파일럿 케이스와 합친다"""
-    cases = load_cases()
+    """A(01_baseline) 실행 폴더의 결과를 케이스와 합친 행으로 읽는다. 파일럿 실행이면 파일럿 케이스와 합친다
+
+    케이스는 실행 폴더의 meta.json이 가리키는 풀에서 읽고, 실행 당시의 데이터 해시와 같은지 확인한다 (load_run_cases).
+    """
+    cases = load_run_cases(run_dir)
     return join_results(pilot_cases(cases) if read_meta(run_dir)["pilot"] else cases, read_results(run_dir), "case_id")
 
 

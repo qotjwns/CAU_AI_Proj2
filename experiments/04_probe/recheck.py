@@ -41,7 +41,7 @@ from mivlm.analysis.probe import (
     load_pre_answer, nested_combined_scores, presence_labels, within_class_auroc,
 )
 from mivlm.config import PREDICTIONS_DIR
-from mivlm.data.cases import load_cases
+from mivlm.data.cases import load_run_cases
 from mivlm.evaluation.report import interval_text
 from mivlm.runner import git_state
 
@@ -90,8 +90,9 @@ def main() -> None:
     parser.add_argument("run", help="outputs/predictions/03_hidden_states/ 아래의 실행 폴더 이름")
     args = parser.parse_args()
 
-    cases = load_cases()
-    all_rows, hidden = load_pre_answer(PREDICTIONS_DIR / SOURCE_EXPERIMENT / args.run, cases)
+    source_dir = PREDICTIONS_DIR / SOURCE_EXPERIMENT / args.run
+    cases = load_run_cases(source_dir)  # hidden state 실행이 쓴 풀의 케이스 (해시 확인)
+    all_rows, hidden = load_pre_answer(source_dir, cases)
     index, labels = presence_labels(all_rows)
     rows = [all_rows[i] for i in index.tolist()]
     margins = torch.tensor([row["logit_margin"] for row in rows], dtype=torch.float64)

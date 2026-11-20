@@ -13,7 +13,7 @@ from mivlm.runner import parse_run_args, run_inference
 
 def main() -> None:
     args = parse_run_args("분해 실험 C: 이미지 3장을 넣고 자리별로 묻기")
-    cases = load_cases()
+    cases = load_cases(args.pool)
     if args.pilot:
         cases = pilot_cases(cases)
     run_inference("02_decomposition/c_per_image_answers", args, per_image_queries(cases), "query_id",

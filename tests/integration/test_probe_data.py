@@ -18,7 +18,7 @@ import torch
 
 from mivlm.analysis.probe import N_FOLDS, class_folds, image_disjoint_training, load_pre_answer
 from mivlm.config import PREDICTIONS_DIR
-from mivlm.data.cases import load_cases
+from mivlm.data.cases import load_run_cases
 
 RUN_DIR = PREDICTIONS_DIR / "03_hidden_states" / "qwen2.5-vl-3b_float32"
 
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(not (RUN_DIR / "results.jsonl").exists(),
 
 @pytest.fixture(scope="module")
 def loaded():
-    return load_pre_answer(RUN_DIR, load_cases())
+    return load_pre_answer(RUN_DIR, load_run_cases(RUN_DIR))
 
 
 HELD_OUT_EVERY = 10  # 순번을 이 수로 나눈 나머지가 HELD_OUT_EVERY - 1인 케이스가 평가용이다
@@ -67,7 +67,7 @@ def test_the_margin_is_a_linear_function_of_the_last_vector(loaded):
 
 def test_the_outer_class_folds_share_no_image(loaded):
     rows, _ = loaded
-    folds = class_folds(load_cases())
+    folds = class_folds(load_run_cases(RUN_DIR))
     fold_of_case = [folds[row["object"]] for row in rows]
 
     for fold in range(N_FOLDS):
