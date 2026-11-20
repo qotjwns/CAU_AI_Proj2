@@ -8,7 +8,9 @@ import pytest
 import torch
 
 from mivlm.analysis.class_sensitivity import class_bootstrap_interval
-from mivlm.analysis.position_weights import SUM_NAMES, slope_sums, slopes
+from mivlm.analysis.position_weights import (
+    SLOT_VARIANTS, SUM_NAMES, TERM_NAMES, shares, slope_sums, slopes, weight_statistics, weight_terms,
+)
 from mivlm.evaluation.metrics import ONE_N_VARIANTS
 
 
@@ -176,3 +178,163 @@ def test_variant_order_follows_one_n_variants(centered):
     classes = {"a": _class([(float(x), float(x), 1.0, 1.0) for x in range(5)])}
 
     assert slopes(slope_sums(classes, centered)).tolist() == pytest.approx([1.0, 0.0, 0.0])
+
+
+# ============================================================ 자리 가중치와 하락 몫 (7-A-2)
+
+
+def _additive_classes(weights: tuple[float, float, float], n_shift: tuple[float, float, float],
+                      sizes: tuple[int, ...] = (6, 5, 7), seed: int = 0) -> dict[str, list[dict]]:
+    """완전한 가산 모형으로 만든 클래스들: 공동 margin = 클래스 offset + Σ_j w_j s_j (s_j는 자리 j의 단일 margin)
+
+    N이 자리 k에 들어가면 s_k만 N의 단일 margin으로 바뀌고, 공동 margin도 같은 식으로 계산한다.
+    P의 단일 margin은 평균 2 근처, 자리 k에 들어가는 N의 단일 margin은 평균 -n_shift[k] 근처다.
+    그래서 자리마다 단일 margin의 변화량 Δ_k가 약 2 + n_shift[k]로 다르다.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    w = torch.tensor(weights, dtype=torch.float64)
+    shift = torch.tensor(n_shift, dtype=torch.float64)
+    classes = {}
+    for number, size in enumerate(sizes):
+        p_single = torch.randn(size, 3, generator=generator, dtype=torch.float64) + 2.0
+        n_single = torch.randn(size, 3, generator=generator, dtype=torch.float64) - shift
+        offset = float(number)
+        pairs = []
+        for row in range(size):
+            cases = {"PPP": {"logit_margin": offset + (w @ p_single[row]).item(),
+                             "single_margins": p_single[row].tolist()}}
+            for slot, variant in enumerate(SLOT_VARIANTS):
+                single = p_single[row].clone()
+                single[slot] = n_single[row, slot]
+                cases[variant] = {"logit_margin": offset + (w @ single).item(), "single_margins": single.tolist()}
+            pairs.append({"pair": f"pair_{row}", "cases": cases})
+        classes[f"class_{number}"] = pairs
+    return classes
+
+
+WEIGHTS = (0.2, 0.3, 0.5)
+N_SHIFT = (1.0, 2.0, 6.0)  # 자리 3의 N이 단일 margin을 훨씬 크게 바꾼다
+
+
+def test_slot_variants_are_in_slot_order():
+    assert SLOT_VARIANTS == ["NPP", "PNP", "PPN"]  # 자리 1, 2, 3에 N이 들어간 변형
+
+
+# ---------------------------------------------------------------- weight_terms
+
+
+def test_weight_terms_hold_one_row_per_class_and_slot():
+    classes = _additive_classes(WEIGHTS, N_SHIFT)
+
+    terms = weight_terms(classes)
+
+    assert terms.shape == (3, 3, len(TERM_NAMES)) and terms.dtype == torch.float64
+    yy, y2 = TERM_NAMES.index("yy"), TERM_NAMES.index("y2")
+    assert torch.equal(terms[:, 0, yy], terms[:, 2, yy]) and torch.equal(terms[:, 0, y2], terms[:, 1, y2])
+    # 클래스 0, 자리 3(PPN)의 하락 항은 그 클래스의 m(PPP) - m(PPN)의 평균이다
+    drops = [pair["cases"]["PPP"]["logit_margin"] - pair["cases"]["PPN"]["logit_margin"] for pair in classes["class_0"]]
+    assert terms[0, 2, TERM_NAMES.index("drop")].item() == pytest.approx(sum(drops) / len(drops))
+
+
+# ---------------------------------------------------------------- shares
+
+
+def test_shares_divide_by_the_sum():
+    assert shares(torch.tensor([1.0, 1.0, 2.0], dtype=torch.float64)).tolist() == [0.25, 0.25, 0.5]
+    assert shares(torch.tensor([2.0, -1.0, 1.0], dtype=torch.float64)).tolist() == [1.0, -0.5, 0.5]  # 합이 양수면 정한다
+
+
+@pytest.mark.parametrize("parts", [[1.0, -1.0, 0.0], [-1.0, -1.0, -2.0], [0.0, 0.0, 0.0], [1.0, -1.0 + 1e-14, 0.0]])
+def test_shares_are_nan_unless_the_sum_is_clearly_positive(parts):
+    assert all(math.isnan(value) for value in shares(torch.tensor(parts, dtype=torch.float64)).tolist())
+
+
+# ---------------------------------------------------------------- weight_statistics
+
+
+def test_weights_are_recovered_from_exact_additive_data():
+    statistics = weight_statistics(weight_terms(_additive_classes(WEIGHTS, N_SHIFT)))
+
+    assert torch.allclose(statistics["weights"], torch.tensor(WEIGHTS, dtype=torch.float64))
+
+
+def test_exact_additive_data_fit_the_prediction_even_when_the_changes_differ_by_slot():
+    statistics = weight_statistics(weight_terms(_additive_classes(WEIGHTS, N_SHIFT)))
+    zero = torch.zeros(3, dtype=torch.float64)
+
+    assert torch.allclose(statistics["share_gap"], zero, atol=1e-10)  # r = δ - δ̂ = 0
+    assert torch.allclose(statistics["magnitude_ratio"], torch.ones(3, dtype=torch.float64))
+    assert torch.allclose(statistics["slope_gap"], zero, atol=1e-10)  # 관측 기울기 = 가산 모형의 기울기
+    # Δ가 자리마다 달라서 δ - ω는 0이 아니다. 그래서 δ - ω를 주 지표로 쓰지 않는다
+    assert statistics["share_vs_weight"].abs().max() > 0.05
+    # N의 단일 margin이 PPP margin과 공분산을 가지면, 남은 P만으로 낸 기울기는 관측 기울기와 다르다
+    assert not torch.allclose(statistics["kept_slope"], statistics["observed_slope"])
+
+
+def test_the_observed_slope_is_the_within_class_slope_of_7a1_in_slot_order():
+    classes = _additive_classes(WEIGHTS, N_SHIFT)
+    in_variant_order = slopes(slope_sums(classes, centered=True))  # PPN, PNP, NPP
+
+    observed = weight_statistics(weight_terms(classes))["observed_slope"]  # 자리 1, 2, 3 = NPP, PNP, PPN
+
+    assert torch.allclose(observed, in_variant_order[[ONE_N_VARIANTS.index(variant) for variant in SLOT_VARIANTS]])
+
+
+def test_the_magnitude_ratio_accepts_a_negative_denominator():
+    # 자리 1의 가중치가 음수라 w_1Δ_1 < 0이다. 그래도 Σw > 0이므로 몫은 정해지고, ρ도 정해진다
+    statistics = weight_statistics(weight_terms(_additive_classes((-0.2, 0.3, 0.5), N_SHIFT)))
+
+    assert (statistics["weights"][0] * statistics["change"][0]).item() < 0
+    assert torch.allclose(statistics["magnitude_ratio"], torch.ones(3, dtype=torch.float64))
+    assert statistics["weight_share"][0].item() == pytest.approx(-0.2 / 0.6)
+
+
+def test_a_singular_weight_regression_gives_nan_instead_of_an_error():
+    classes = _additive_classes(WEIGHTS, N_SHIFT)
+    for pairs in classes.values():  # 자리 1과 2의 단일 margin이 항상 같으면 XᵀX가 특이하다
+        for pair in pairs:
+            single = pair["cases"]["PPP"]["single_margins"]
+            single[1] = single[0]
+
+    statistics = weight_statistics(weight_terms(classes))
+
+    for name in ["weights", "weight_share", "predicted_share", "share_gap", "magnitude_ratio", "additive_slope"]:
+        assert all(math.isnan(value) for value in statistics[name].tolist()), name
+
+
+def test_no_variation_in_the_ppp_margin_gives_nan_slopes():
+    statistics = weight_statistics(weight_terms(_additive_classes((0.0, 0.0, 0.0), N_SHIFT)))  # m = 클래스 offset
+
+    for name in ["kept_slope", "additive_slope", "observed_slope", "weight_share", "predicted_share"]:
+        assert all(math.isnan(value) for value in statistics[name].tolist()), name
+
+
+def test_a_class_with_one_pair_does_not_change_the_weights():
+    classes = _additive_classes(WEIGHTS, N_SHIFT)
+    with_single = {**classes, "single": _additive_classes(WEIGHTS, N_SHIFT, sizes=(1,), seed=1)["class_0"]}
+
+    before, after = weight_statistics(weight_terms(classes)), weight_statistics(weight_terms(with_single))
+
+    assert torch.allclose(before["weights"], after["weights"])
+    assert not torch.allclose(before["drop"], after["drop"])  # D와 Δ는 클래스 평균이라 그 클래스도 한 표를 갖는다
+
+
+def test_resampled_classes_give_the_statistics_of_the_duplicated_data():
+    classes = _additive_classes((0.4, 0.1, 0.7), N_SHIFT)
+    duplicated = {"copy_1": classes["class_0"], "copy_2": classes["class_0"], "other": classes["class_2"]}
+
+    from_terms = weight_statistics(weight_terms(classes)[torch.tensor([0, 0, 2])])
+    direct = weight_statistics(weight_terms(duplicated))
+
+    for name in from_terms:
+        assert torch.allclose(from_terms[name], direct[name], equal_nan=True), name
+
+
+def test_weight_statistics_accept_a_batch_of_draws():
+    terms = weight_terms(_additive_classes(WEIGHTS, N_SHIFT))
+    draws = terms[torch.tensor([[0, 1, 2], [2, 2, 1]])]  # 뽑기 2번
+
+    batched = weight_statistics(draws)
+
+    assert all(values.shape == (2, 3) for values in batched.values())
+    assert torch.allclose(batched["share_gap"][1], weight_statistics(terms[torch.tensor([2, 2, 1])])["share_gap"])
