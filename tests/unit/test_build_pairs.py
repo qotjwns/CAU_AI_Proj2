@@ -2,6 +2,7 @@
 scripts/build_pairs.py 단위 테스트
 pytest tests/unit/test_build_pairs.py -v
 """
+import random
 from collections import Counter
 
 from build_pairs import make_pairs
@@ -59,3 +60,19 @@ def test_name_with_space():
 
     assert pairs[0]["group_id"] == "group_01_dining_table"
     assert pairs[0]["object"] == "dining table"
+
+
+def test_the_default_seed_prefix_keeps_the_original_seed():
+    pool = _make_pool()
+
+    assert make_pairs(pool) == make_pairs(pool, "42")
+    # 기존 seed 문자열 f"42:{group_id}:pairs"로 group의 첫 pair의 N을 뽑는다
+    assert make_pairs(pool)[0]["n"] == random.Random("42:group_01_dog:pairs").sample(NEGATIVES, 3)
+
+
+def test_a_pool_prefix_changes_only_the_negatives():
+    original, dev = make_pairs(_make_pool()), make_pairs(_make_pool(), "42:dev")
+
+    assert [pair["p"] for pair in original] == [pair["p"] for pair in dev]
+    assert dev[0]["n"] == random.Random("42:dev:group_01_dog:pairs").sample(NEGATIVES, 3)
+    assert [pair["n"] for pair in original] != [pair["n"] for pair in dev]

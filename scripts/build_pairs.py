@@ -13,13 +13,17 @@ GROUP_PATTERNS = [(0, 1, 2, 3), (4, 5, 6, 7), (0, 2, 4, 6), (1, 3, 5, 7), (0, 3,
 PAIR_SIZE = 3
 
 
-def make_pairs(pool: dict) -> list[dict]:
-    """클래스 pool 하나로 group 5개 × pair 4개 = pair 20개를 만든다"""
+def make_pairs(pool: dict, seed_prefix: str = str(SEED)) -> list[dict]:
+    """클래스 pool 하나로 group 5개 × pair 4개 = pair 20개를 만든다
+
+    group마다 N 3장을 고르는 seed는 f"{seed_prefix}:{group_id}:pairs"다. 기본값 "42"는 기존 데이터의 seed와 같다.
+    새 이미지 풀은 풀 이름을 붙인 접두어를 쓴다 (예: "42:dev", scripts/build_new_pools.py).
+    """
     pairs = []
     for g, pattern in enumerate(GROUP_PATTERNS, start=1):
         group_id = f"group_{g:02d}_{pool['name'].replace(' ', '_')}"
         group_positives = [pool["positives"][i] for i in pattern]
-        rng = random.Random(f"{SEED}:{group_id}:pairs")
+        rng = random.Random(f"{seed_prefix}:{group_id}:pairs")
         # combinations는 입력 순서를 유지한다: [0,1,2] → [0,1,3] → [0,2,3] → [1,2,3]
         for pair_id, p in enumerate(itertools.combinations(group_positives, PAIR_SIZE), start=1):
             pairs.append({
