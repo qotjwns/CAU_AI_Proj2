@@ -6,9 +6,12 @@ import math
 
 import pytest
 
+import torch
+
 from mivlm.analysis.logit_bias import (
-    assign_biases, best_bias, bias_metrics, class_metrics, damage_limited_biases, largest_bias_within_damage,
-    no_shift_candidates, selection_rules, sweep, tradeoff_curve, two_way_candidates,
+    assign_biases, best_bias, bias_metrics, class_damage_limited_biases, class_metrics, damage_limited_biases,
+    g1_verdict, has_correct_ppp, largest_bias_within_damage, no_shift_candidates, pooled_rate, pooled_rate_interval,
+    selection_rules, sweep, tradeoff_curve, two_way_candidates,
 )
 
 
@@ -288,3 +291,84 @@ def test_a_damage_rate_exactly_at_the_limit_counts_as_within_the_limit():
 
     assert largest_bias_within_damage(rows, no_shift_candidates(rows), 0.05) == 0.3
     assert sweep(rows, [0.125])["ppp_damage_rate"].item() == 0.05
+
+
+# ------------------------------------------- 클래스별 손상 한도의 기준선 (8-A), G1
+
+
+def test_has_correct_ppp_needs_a_ppp_with_a_positive_margin():
+    assert has_correct_ppp(_rows(ppp=[-1.0, 0.5], one_n=[]))
+    assert not has_correct_ppp(_rows(ppp=[-1.0, 0.0], one_n=[2.0]))  # margin 0은 No로 센다. N 1장은 PPP가 아니다
+
+
+def test_largest_bias_within_damage_is_0_when_there_is_no_correct_ppp():
+    rows = _rows(ppp=[-1.0, 0.0], one_n=[0.5, 1.5])  # 손상률의 분모(원래 맞힌 PPP 수)가 0이다
+
+    assert largest_bias_within_damage(rows, no_shift_candidates(rows), 0.05) == 0.0  # 에러 없이 기준을 옮기지 않는다
+
+
+def _class_groups() -> list[dict]:
+    """클래스 a, b에 그룹 둘씩, 그룹마다 PPP 하나와 N 1장 하나. 모든 margin 값이 서로 다르다"""
+    return (_rows([0.5], [0.2], "a", "g1") + _rows([3.0], [1.1], "a", "g2")
+            + _rows([5.0], [4.0], "b", "g1") + _rows([6.0], [4.5], "b", "g2"))
+
+
+def test_class_cv_chooses_from_the_other_groups_of_the_same_class_only():
+    biases, fallback_units = class_damage_limited_biases(_class_groups(), 0.05)
+
+    # a의 g1은 a의 g2(PPP 3.0, N 1.1)로 고른다: 후보 0, 1.1, 3.0 중 손상 0%인 가장 큰 1.1
+    # a의 g2는 a의 g1(PPP 0.5, N 0.2)로 고른다: 0.2. b도 b 안에서만 고른다 (g1 -> 4.5, g2 -> 4.0)
+    assert biases["class_cv"] == [1.1, 1.1, 0.2, 0.2, 4.5, 4.5, 4.0, 4.0]
+    assert fallback_units == {"class_cv": 0, "class_oracle": 0}
+
+
+def test_class_oracle_chooses_from_the_whole_class():
+    biases, _ = class_damage_limited_biases(_class_groups(), 0.05)
+
+    # a 전체: 맞힌 PPP 0.5, 3.0. 0.5부터 손상 50%라, 그 아래의 가장 큰 후보 0.2. b 전체: 5.0부터 손상이라 4.5
+    assert biases["class_oracle"] == [0.2] * 4 + [4.5] * 4
+
+
+def test_the_damage_seen_in_the_held_out_group_can_break_the_limit():
+    rows = _class_groups()
+    biases, _ = class_damage_limited_biases(rows, 0.05)
+
+    by_class = class_metrics(rows, biases["class_cv"])
+
+    # a의 g1은 g2에서 고른 1.1을 받아 PPP 0.5가 No가 된다. 학습 쪽에서는 손상 0%였다
+    assert by_class["a"]["ppp_damage_rate"] == 0.5
+    assert by_class["a"]["n_corrected"] == 1  # g1의 N 0.2는 고쳐지고, g2의 N 1.1은 기준 0.2를 넘어 그대로 남는다
+
+
+def test_units_without_a_correct_ppp_in_training_keep_b_0_and_are_counted():
+    rows = _class_groups() + _rows([-1.0], [0.5], "c", "g1") + _rows([-2.0], [0.3], "c", "g2")
+
+    biases, fallback_units = class_damage_limited_biases(rows, 0.05)
+
+    assert biases["class_cv"][8:] == [0.0] * 4 and biases["class_oracle"][8:] == [0.0] * 4
+    assert fallback_units == {"class_cv": 2, "class_oracle": 1}  # c의 그룹 둘, 클래스 c 하나
+
+
+def test_pooled_rate_adds_the_counts_before_dividing():
+    counts = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
+
+    assert pooled_rate(counts).item() == pytest.approx(4 / 6)  # 클래스 비율의 평균 (0.5 + 0.75) / 2 가 아니다
+    assert pooled_rate(counts[torch.tensor([0, 0, 1])]).item() == pytest.approx(5 / 8)  # 다시 뽑힌 클래스는 두 번 더한다
+    assert math.isnan(pooled_rate(torch.zeros(2, 2, dtype=torch.float64)).item())  # 분모의 합이 0
+
+
+def test_pooled_rate_interval_collapses_when_every_class_has_the_same_rate():
+    rate, low, high = pooled_rate_interval([(1, 2), (2, 4), (3, 6)])
+
+    assert (rate, low, high) == pytest.approx((0.5, 0.5, 0.5))
+
+
+@pytest.mark.parametrize("damage, low, high, expected", [
+    (0.04, 0.20, 0.45, "통과"),
+    (0.05, 0.50, 0.70, "실패"),  # 손상이 한도와 같으면 한도 안이다
+    (0.06, 0.20, 0.45, "보류"),  # 교정률이 낮아도 평가 쪽 손상이 한도를 넘으면 보류
+    (0.04, 0.40, 0.60, "보류"),  # 구간이 50%에 걸침
+    (float("nan"), 0.20, 0.45, "보류"),
+])
+def test_g1_verdict(damage, low, high, expected):
+    assert g1_verdict(damage, low, high).startswith(expected)

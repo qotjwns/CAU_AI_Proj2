@@ -13,13 +13,18 @@
     class_cv      같은 클래스의 다른 그룹에서 고른 기준. 그 클래스의 정답을 쓰고, 그룹끼리 이미지가 겹쳐서 낙관적이다
     class_oracle  같은 클래스의 모든 케이스를 보고 고른 기준. 방법이 아니라 상한이다
 global과 class_cv의 차이는 쓰는 정보와 나누는 방식이 달라서 생긴 것이기도 하다. 클래스 성향의 인과적 효과로 읽지 않는다.
+PPP 손상 한도를 건 기준선은 global(damage_limited_biases)과 클래스별(class_damage_limited_biases, 8-A)이 있다.
 
 기준 이동은 모델을 고치는 것이 아니라 답을 읽는 방식을 바꾸는 것이다.
 """
 import torch
 
+from mivlm.analysis.class_sensitivity import class_bootstrap_interval
+
 DAMAGE_LIMITS = [0.02, 0.05, 0.10]  # PPP 손상률의 한도
 PRACTICAL_DELTA = 0.02  # 실질적 효과의 기준: 균형 정확도 차이 2%p. 연구자가 정한 값이다
+G1_DAMAGE_LIMIT = 0.05  # G1에 쓰는 손상 한도. 학습 쪽 기준 선택과 평가 쪽 손상 확인에 같이 쓴다
+G1_CORRECTION_THRESHOLD = 0.5  # G1의 교정률 기준: 원래 False-Yes의 절반. 연구자가 정한 값이다
 
 
 def no_shift_candidates(rows: list[dict]) -> list[float]:
@@ -104,12 +109,20 @@ def best_bias(rows: list[dict], candidates: list[float]) -> float:
                key=lambda bias: (abs(bias), -bias))
 
 
+def has_correct_ppp(rows: list[dict]) -> bool:
+    """rows에 원래 Yes로 맞힌 PPP(margin > 0)가 있는가. 없으면 PPP 손상률의 분모가 0이라 손상률을 정할 수 없다"""
+    return any(row["variant"] == "PPP" and row["logit_margin"] > 0 for row in rows)
+
+
 def largest_bias_within_damage(rows: list[dict], candidates: list[float], limit: float) -> float:
     """후보 중 rows에서 PPP 손상률이 limit 이하인 가장 큰 기준
 
     candidates는 0 이상이고 0을 포함해야 한다 (no_shift_candidates). b = 0의 손상률이 0이라 답이 항상 있다.
     기준이 클수록 손상률도 교정률도 줄지 않으므로, 한도 안에서 가장 큰 기준이 False-Yes를 가장 많이 고친다.
+    rows에 원래 맞힌 PPP가 없으면 손상률을 정할 수 없으므로, 기준을 옮기지 않고 0.0을 돌려준다 (보수적 대체).
     """
+    if not has_correct_ppp(rows):
+        return 0.0
     damage = sweep(rows, candidates)["ppp_damage_rate"].tolist()
     return max(bias for bias, value in zip(candidates, damage) if value <= limit)
 
@@ -166,6 +179,68 @@ def damage_limited_biases(rows: list[dict], fold_of: dict, limit: float) -> list
         return largest_bias_within_damage(training, no_shift_candidates(training), limit)
 
     return assign_biases(rows, lambda row: fold_of[row["object"]], lambda row: None, choose, hold_out=True)
+
+
+def class_damage_limited_biases(rows: list[dict], limit: float) -> tuple[dict[str, list[float]], dict[str, int]]:
+    """클래스별 PPP 손상 한도의 기준선 (8-A): 같은 클래스 안에서 손상률이 limit 이하인 가장 큰 기준
+
+    class_cv      평가 그룹을 빼고, 같은 클래스의 나머지 그룹에서 고른다. G1 판정에 쓰는 규칙이다
+    class_oracle  클래스 전체(평가하는 케이스 포함)에서 고른다. 평가 라벨을 쓰는 참고 상한이고, 방법이 아니다
+    반환: ({규칙: 행마다의 기준}, {규칙: 학습 쪽에 원래 맞힌 PPP가 없어 b = 0을 쓴 평가 단위의 수})
+    후보는 학습 쪽의 margin 값이다 (no_shift_candidates). 학습 쪽 손상률이 한도 안이어도 평가 쪽의 실제 손상률은
+    넘을 수 있고, 넘었는지는 평가 결과에서 그대로 본다.
+    """
+    fallback_units = {"class_cv": 0, "class_oracle": 0}
+
+    def choose_for(rule: str):
+        def choose(training: list[dict]) -> float:
+            if not has_correct_ppp(training):
+                fallback_units[rule] += 1
+            return largest_bias_within_damage(training, no_shift_candidates(training), limit)
+        return choose
+
+    def same_class(row: dict) -> str:
+        return row["object"]
+
+    biases = {
+        "class_cv": assign_biases(rows, lambda row: (row["object"], row["group_id"]), same_class,
+                                  choose_for("class_cv"), hold_out=True),
+        "class_oracle": assign_biases(rows, same_class, same_class, choose_for("class_oracle"), hold_out=False),
+    }
+    return biases, fallback_units
+
+
+def pooled_rate(counts: torch.Tensor) -> torch.Tensor:
+    """클래스마다의 (분자, 분모) (..., 클래스 수, 2)를 클래스 축으로 더한 비율: (...,). 분모의 합이 0이면 nan
+
+    클래스를 다시 뽑은 값 (뽑기 수, 클래스 수, 2)를 넣으면 뽑기마다의 합친 비율이 나온다.
+    """
+    numerator, denominator = counts.sum(dim=-2).unbind(dim=-1)
+    return torch.where(denominator > 0, numerator / denominator, torch.nan)
+
+
+def pooled_rate_interval(counts: list[tuple[int, int]], level: float = 0.95) -> tuple[float, float, float]:
+    """클래스마다의 (분자, 분모)로 낸 합친 비율과, 클래스를 단위로 다시 뽑은 구간: (비율, 하한, 상한)"""
+    values = torch.tensor(counts, dtype=torch.float64)
+    low, high = class_bootstrap_interval(values, pooled_rate, level).tolist()
+    return pooled_rate(values).item(), low, high
+
+
+def g1_verdict(damage: float, low: float, high: float) -> str:
+    """G1(Calibration 한계)의 판정. 제약형 class_cv를 손상 한도 G1_DAMAGE_LIMIT로 적용한 결과로 내린다
+
+    damage: 평가 쪽의 실제 PPP 손상률 (케이스를 모두 합친 값). low, high: 합친 False-Yes 교정률의 95% 구간
+    평가 쪽 손상이 한도를 넘으면 보류(손상 예산 위반). 한도 안이면 구간 상한 < 50%는 통과, 하한 >= 50%는 실패,
+    그 밖에는 보류. 값을 정할 수 없으면(nan) 보류다.
+    탐색적 관문이다 (기존 class_cv 결과를 일부 본 뒤에 정했다). 통과는 이 규칙의 한계이지, 모든 보정 방법의 한계가 아니다.
+    """
+    if not damage <= G1_DAMAGE_LIMIT:
+        return "보류 (평가 쪽 PPP 손상이 한도를 넘음)"
+    if high < G1_CORRECTION_THRESHOLD:
+        return "통과 (이 규칙으로는 원래 False-Yes의 절반 미만만 고친다)"
+    if low >= G1_CORRECTION_THRESHOLD:
+        return "실패 (이 규칙으로 원래 False-Yes의 절반 이상을 고친다)"
+    return "보류 (교정률의 구간이 50%에 걸침)"
 
 
 def class_metrics(rows: list[dict], biases: list[float]) -> dict[str, dict[str, float]]:

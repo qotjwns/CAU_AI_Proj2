@@ -14,6 +14,13 @@ python experiments/01_baseline/logit_bias.py qwen2.5-vl-3b_float32    # 정밀�
     global = 다른 클래스에서 고름 / class_cv = 같은 클래스의 다른 그룹에서 고름 / class_oracle = 같은 클래스 전체에서 고름
 손상 한도의 기준선: PPP 손상률이 2%, 5%, 10% 이하인 가장 큰 b를 다른 클래스에서 고른다. 평가한 클래스의 실제 손상률과
     한도를 넘었는지를 그대로 적는다.
+클래스별 손상 한도의 기준선 (8-A): 같은 한도를 같은 클래스 안에서 건다. class_cv는 평가 그룹을 뺀 나머지 그룹에서,
+    class_oracle(참고 상한)은 클래스 전체에서 고른다. 학습 쪽에 원래 맞힌 PPP가 없으면 b = 0을 쓰고 그 수를 적는다.
+
+G1 (Calibration 한계, 탐색적 관문. 기존 class_cv 결과를 일부 본 뒤에 정했다). 주 판정은 3B bf16 실행이다
+    5% 한도의 class_cv에서, 평가 쪽 실제 PPP 손상(합친 값)이 5% 이하이고 합친 False-Yes 교정률의 95% 구간 상한이
+    50%보다 작으면 통과, 하한이 50% 이상이면 실패. 평가 쪽 손상이 5%를 넘으면 보류(손상 예산 위반), 그 밖에도 보류.
+    통과는 이 규칙(제약형 class_cv)의 한계이지, 가능한 모든 보정 방법의 한계가 아니다.
 
 판정 기준 (결과를 보기 전에 정했다. 결과를 본 뒤에 바꾸지 않는다). 둘 다 클래스마다의 균형 정확도 차이의 평균으로 본다
     G. global이 원래 답보다 낫다: 균형 정확도(global) - 균형 정확도(original)
@@ -33,8 +40,8 @@ from mivlm.analysis.class_sensitivity import (
 )
 from mivlm.analysis.evidence_link import practical_verdict
 from mivlm.analysis.logit_bias import (
-    DAMAGE_LIMITS, PRACTICAL_DELTA, bias_metrics, class_metrics, damage_limited_biases, no_shift_candidates,
-    selection_rules, two_way_candidates,
+    DAMAGE_LIMITS, G1_DAMAGE_LIMIT, PRACTICAL_DELTA, bias_metrics, class_damage_limited_biases, class_metrics,
+    damage_limited_biases, g1_verdict, no_shift_candidates, pooled_rate_interval, selection_rules, two_way_candidates,
 )
 from mivlm.config import PREDICTIONS_DIR, TABLES_DIR
 from mivlm.data.cases import image_linked_classes
@@ -57,6 +64,9 @@ LIMITS = """[한계]
   bf16 실행의 margin은 0.125 간격이라, 손상 한도에 딱 맞는 기준이 없을 수 있다. 실제 손상률을 같이 본다.
   후보 b는 c9c2899까지 0.125 간격의 격자였고, float32 실행의 손상 한도 2%, 5% 기준선이 그 격자 때문에 b = 0으로 떨어졌다.
   결과를 본 뒤에 후보를 margin 값으로 바꿨으므로, 격자 결과와 이 결과는 민감도 분석으로 같이 적는다.
+  클래스별 손상 한도(8-A)에서 학습 쪽의 맞힌 PPP는 클래스마다 십여 개뿐이다. 그래서 5% 한도는 사실상 학습 쪽 손상 0개를 뜻하고,
+  그룹(맞힌 PPP 0~4개)에서는 한 개만 손상돼도 한도를 넘는다. 그룹별 위반은 이산성 때문에 많아 보일 수 있다.
+  G1은 기존 class_cv 결과를 일부 본 뒤에 정한 탐색적 관문이다. class_oracle은 평가 라벨을 쓴 참고 상한이라 판정이 없다.
   구간은 클래스를 단위로 다시 뽑아 만든다. 단위가 적어(클래스 20개) 실제보다 조금 좁을 수 있다.
   같은 이미지를 여러 케이스가 돌려 쓰고, 일부 이미지는 두 클래스가 같이 쓴다."""
 
@@ -121,6 +131,46 @@ def print_damage_baseline(setup: str, rows: list[dict], fold_of: dict) -> None:
               f"교정률 {class_interval(by_class, 'false_yes_correction_rate')}")
 
 
+def print_class_damage_baseline(run: str, rows: list[dict]) -> None:
+    """클래스별 손상 한도의 기준선(8-A): 한도마다 class_cv와 class_oracle의 기준, 평가 쪽 손상과 교정, 그리고 G1 판정"""
+    print("\n[클래스별 PPP 손상 한도의 기준선 (8-A)] 기준은 같은 클래스 안에서만 고른다. "
+          "class_cv는 평가 그룹을 뺀 나머지 그룹에서, class_oracle(참고 상한, 평가 라벨 사용)은 클래스 전체에서")
+    units = {"class_cv": len({(row["object"], row["group_id"]) for row in rows}),
+             "class_oracle": len({row["object"] for row in rows})}
+    g1 = None
+    for limit in DAMAGE_LIMITS:
+        biases_by_rule, fallback_units = class_damage_limited_biases(rows, limit)
+        print(f"  한도 {limit:.0%}:")
+        for rule, biases in biases_by_rule.items():
+            pooled, by_class = bias_metrics(rows, biases), class_metrics(rows, biases)
+            # 그룹(평가 단위)마다의 실제 손상. 원래 맞힌 PPP가 없는 그룹은 손상률을 정할 수 없어 세지 않는다
+            by_group = {}
+            for row, bias in zip(rows, biases):
+                by_group.setdefault((row["object"], row["group_id"]), []).append((row, bias))
+            group_damage = [bias_metrics([row for row, _ in chosen], [bias for _, bias in chosen])
+                            for chosen in by_group.values()]
+            groups_with_ppp = [values for values in group_damage if values["n_ppp_yes"] > 0]
+            correction, low, high = pooled_rate_interval([(values["n_corrected"], values["n_false_yes"])
+                                                          for values in by_class.values()])
+            over = pooled["ppp_damage_rate"] > limit
+            print(f"    {rule}: 고른 기준 {min(biases):.3f} ~ {max(biases):.3f}, "
+                  f"학습 쪽에 맞힌 PPP가 없어 b = 0을 쓴 단위 {fallback_units[rule]}/{units[rule]}개")
+            print(f"      실제 손상 {pooled['n_damaged']}/{pooled['n_ppp_yes']} = {pooled['ppp_damage_rate']:.1%} "
+                  f"({'한도 위반' if over else '한도 안'}), 한도를 넘은 클래스 "
+                  f"{sum(values['ppp_damage_rate'] > limit for values in by_class.values())}개, "
+                  f"한도를 넘은 그룹 {sum(values['ppp_damage_rate'] > limit for values in groups_with_ppp)}"
+                  f"/{len(groups_with_ppp)}개 (맞힌 PPP가 있는 그룹)")
+            print(f"      False-Yes 교정 {pooled['n_corrected']}/{pooled['n_false_yes']} = "
+                  f"{interval_text(correction, low, high)} (클래스를 다시 뽑은 95% 구간), "
+                  f"N 1장 중 False-Yes 비율 {pooled['false_yes_rate']:.1%}")
+            if rule == "class_cv" and limit == G1_DAMAGE_LIMIT:
+                g1 = (pooled["ppp_damage_rate"], correction, low, high)
+    damage, correction, low, high = g1
+    print(f"\n[G1] 5% 한도의 class_cv: 평가 쪽 실제 손상 {damage:.1%}, 합친 교정률 {interval_text(correction, low, high)}"
+          f" -> {g1_verdict(damage, low, high)}")
+    print(f"  이 실행의 역할: {RUN_ROLES.get(run, '역할을 정하지 않은 실행')}. G1의 주 판정은 3B bf16(qwen2.5-vl-3b)이다.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="결정 기준 이동 분석")
     parser.add_argument("run", help="outputs/predictions/01_baseline/ 아래의 실행 폴더 이름")
@@ -158,6 +208,7 @@ def main() -> None:
     print_verdicts("판정", evaluated)
     for setup in [MAIN_SETUP, "이어진 클래스를 같이 뺌"]:
         print_damage_baseline(setup, *setups[setup])
+    print_class_damage_baseline(args.run, rows)
 
     print("\n[자리별 False-Yes 비율]  클래스 평균 [98.3% 구간]")
     print(f"  {'':<14}" + "".join(f"{variant:<30}" for variant in ONE_N_VARIANTS))
