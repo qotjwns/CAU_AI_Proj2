@@ -3,13 +3,15 @@ src/mivlm/analysis/probe.py 단위 테스트 (모델은 로딩하지 않는다)
 pytest tests/unit/test_probe.py -v
 """
 import json
+import math
 
 import torch
 
 from mivlm.analysis.pair_store import save_pair_record
 from mivlm.analysis.probe import (
-    accuracy_by_layer, class_folds, cross_validated_scores, fit_probe, load_pre_answer, presence_labels, probe_scores,
-    slot_labels,
+    accuracy_by_layer, class_folds, combiner_scores, cross_validated_scores, fit_combiner, fit_probe,
+    held_out_probe_scores, image_disjoint_training, load_pre_answer, n_present_logit, nested_combined_scores,
+    presence_labels, probe_scores, slot_labels, within_class_auroc,
 )
 
 
@@ -23,7 +25,7 @@ def _separable(n: int, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def test_load_pre_answer_collects_one_vector_set_per_case_with_class_and_variant(tmp_path):
-    cases = [{"case_id": f"pair_{pair}_{variant}", "object": name, "variant": variant}
+    cases = [{"case_id": f"pair_{pair}_{variant}", "object": name, "variant": variant, "image_ids": [ord(pair), 7]}
              for pair, name in [("a", "cat"), ("b", "dog")] for variant in ["PPP", "PPN"]]
     with open(tmp_path / "results.jsonl", "w") as f:
         for pair in ["a", "b"]:
@@ -37,10 +39,10 @@ def test_load_pre_answer_collects_one_vector_set_per_case_with_class_and_variant
     rows, hidden = load_pre_answer(tmp_path, cases)
 
     assert rows == [
-        {"case_id": "pair_a_PPP", "object": "cat", "variant": "PPP", "logit_margin": 1.5},
-        {"case_id": "pair_a_PPN", "object": "cat", "variant": "PPN", "logit_margin": -0.5},
-        {"case_id": "pair_b_PPP", "object": "dog", "variant": "PPP", "logit_margin": 1.5},
-        {"case_id": "pair_b_PPN", "object": "dog", "variant": "PPN", "logit_margin": -0.5},
+        {"case_id": "pair_a_PPP", "object": "cat", "variant": "PPP", "image_ids": [97, 7], "logit_margin": 1.5},
+        {"case_id": "pair_a_PPN", "object": "cat", "variant": "PPN", "image_ids": [97, 7], "logit_margin": -0.5},
+        {"case_id": "pair_b_PPP", "object": "dog", "variant": "PPP", "image_ids": [98, 7], "logit_margin": 1.5},
+        {"case_id": "pair_b_PPN", "object": "dog", "variant": "PPN", "image_ids": [98, 7], "logit_margin": -0.5},
     ]
     assert hidden.shape == (4, 3, 4)  # 케이스 4개, 층 3개, 벡터 크기 4
     assert hidden[:, 0, 0].tolist() == [1.0, 2.0, 1.0, 2.0]
@@ -179,3 +181,149 @@ def test_accuracy_is_computed_per_layer_over_the_masked_cases_only():
     assert accuracy_by_layer(predictions, labels, torch.ones(4, dtype=torch.bool)).tolist() == [1.0, 0.5, 0.0]
     assert torch.allclose(accuracy_by_layer(predictions, labels, last_three), torch.tensor([1.0, 2 / 3, 0.0]))
 
+
+
+# ======================================================================= 재검증 (STEP 9)
+
+
+def _rows(objects: list[str], images: list[list[int]]) -> list[dict]:
+    return [{"object": name, "image_ids": image_ids} for name, image_ids in zip(objects, images)]
+
+
+def _study(extra_signal: float, n_classes: int = 10, per_label: int = 20, seed: int = 0):
+    """클래스마다 PPP(0) per_label개와 N 하나(1) per_label개. 이미지는 케이스마다 달라서 겹치지 않는다
+
+    margin = 클래스 offset - (레이블) + 잡음. 벡터 x = [margin, 숨은 신호, 잡음 4개]
+    숨은 신호 = extra_signal x (레이블) + 잡음 (margin과 독립). extra_signal이 0이면 x에는 margin 이상의 정보가 없다
+    반환: (x, margins, labels, rows, fold_of_case)
+    """
+    generator = torch.Generator().manual_seed(seed)
+    labels = torch.tensor([0, 1] * per_label * n_classes)
+    objects = [f"class_{i // (2 * per_label)}" for i in range(len(labels))]
+    offsets = torch.randn(n_classes, generator=generator) * 3
+    offset = offsets[torch.tensor([int(name.split("_")[1]) for name in objects])]
+    margins = offset - labels.double() + torch.randn(len(labels), generator=generator, dtype=torch.float64)
+    hidden_signal = extra_signal * labels + torch.randn(len(labels), generator=generator)
+    noise = torch.randn(len(labels), 4, generator=generator)
+    x = torch.cat([margins.float().unsqueeze(1), hidden_signal.unsqueeze(1), noise], dim=1)
+    rows = _rows(objects, [[i] for i in range(len(labels))])
+    folds = class_folds(rows)
+    return x, margins, labels, rows, [folds[name] for name in objects]
+
+
+def _mean_gap(scores: torch.Tensor, margins: torch.Tensor, labels: torch.Tensor, rows: list[dict]) -> float:
+    """클래스 내부 AUROC의 클래스 평균: scores - (-margin)"""
+    objects = [row["object"] for row in rows]
+    first, second = within_class_auroc(scores, labels, objects), within_class_auroc(-margins, labels, objects)
+    return sum(first[name] - second[name] for name in first) / len(first)
+
+
+# ------------------------------------------------------------ within_class_auroc, n_present_logit
+
+
+def test_within_class_auroc_counts_ties_as_half():
+    scores = torch.tensor([0.1, 0.4, 0.4, 0.9])
+    labels = torch.tensor([0, 0, 1, 1])
+
+    assert within_class_auroc(scores, labels, ["a"] * 4) == {"a": 0.875}  # (1 + 0.5 + 1 + 1) / 4
+
+
+def test_within_class_auroc_ignores_class_offsets_and_is_nan_without_both_labels():
+    scores = torch.tensor([0.1, 0.9, 0.2, 0.8, 5.0])
+    labels = torch.tensor([0, 1, 0, 1, 1])
+    objects = ["a", "a", "b", "b", "c"]
+
+    shifted = scores + torch.tensor([0.0, 0.0, 100.0, 100.0, 0.0])  # 클래스 b의 점수만 한꺼번에 올린다
+
+    original, moved = within_class_auroc(scores, labels, objects), within_class_auroc(shifted, labels, objects)
+
+    assert (original["a"], original["b"]) == (moved["a"], moved["b"]) == (1.0, 1.0)
+    assert math.isnan(original["c"]) and math.isnan(moved["c"])  # c에는 PPP가 없다 (nan끼리는 ==로 비교되지 않는다)
+
+
+def test_n_present_logit_is_the_difference_of_the_two_scores():
+    assert n_present_logit(torch.tensor([[1.0, 3.0], [2.0, 0.0]])).tolist() == [2.0, -2.0]
+
+
+# ------------------------------------------------------------ image_disjoint_training
+
+
+def test_training_cases_that_share_an_image_with_the_test_cases_are_dropped():
+    rows = _rows(["a", "b", "c", "d"], [[1, 2], [3, 4], [2, 9], [5, 6]])
+
+    kept, dropped = image_disjoint_training([1, 2, 3], [0], rows)  # 평가 케이스 0의 이미지는 1, 2
+
+    assert (kept, dropped) == ([1, 3], 1)  # 케이스 2가 이미지 2를 같이 쓴다
+
+
+def test_held_out_probe_scores_report_the_dropped_cases_per_fold():
+    x, labels = _separable(8)
+    rows = _rows(["a", "a", "b", "b", "c", "c", "d", "d"], [[i] for i in range(8)])
+    rows[2]["image_ids"] = [0]  # 묶음 1의 케이스가 묶음 0의 이미지를 같이 쓴다
+
+    scores, dropped = held_out_probe_scores(x, labels, rows, [0, 0, 1, 1, 0, 0, 1, 1])
+
+    assert scores.shape == (8,) and scores.dtype == torch.float64
+    assert dropped == [1, 1]  # 묶음 0을 평가할 때 케이스 2, 묶음 1을 평가할 때 케이스 0을 학습에서 뺀다
+
+
+# ------------------------------------------------------------ fit_combiner
+
+
+def test_fit_combiner_finds_the_signs_and_standardises_with_training_statistics():
+    generator = torch.Generator().manual_seed(1)
+    features = torch.randn(400, 2, generator=generator, dtype=torch.float64) * torch.tensor([2.0, 5.0]) + 10
+    labels = ((features[:, 0] - 10) / 2 - (features[:, 1] - 10) / 5 > 0).long()
+
+    combiner = fit_combiner(features, labels)
+
+    assert combiner["weight"][0] > 0 > combiner["weight"][1]
+    assert torch.allclose(combiner["mean"], features.mean(dim=0))
+    test = torch.tensor([[10.0, 10.0], [14.0, 10.0]], dtype=torch.float64)
+    expected = ((test - combiner["mean"]) / combiner["std"]) @ combiner["weight"] + combiner["bias"]
+    assert torch.allclose(combiner_scores(combiner, test), expected)  # 평가 쪽 분포로 다시 표준화하지 않는다
+
+
+# ------------------------------------------------------------ nested_combined_scores
+
+
+def test_hidden_information_beyond_the_margin_raises_the_within_class_auroc():
+    x, margins, labels, rows, folds = _study(extra_signal=1.5)
+
+    nested = nested_combined_scores(x, margins, labels, rows, folds)
+
+    assert _mean_gap(nested["combined"], margins, labels, rows) > 0.05
+
+
+def test_without_hidden_information_beyond_the_margin_the_gain_is_near_zero():
+    x, margins, labels, rows, folds = _study(extra_signal=0.0)
+
+    nested = nested_combined_scores(x, margins, labels, rows, folds)
+
+    assert abs(_mean_gap(nested["combined"], margins, labels, rows)) < 0.05
+
+
+def test_the_combiner_of_a_fold_never_sees_that_fold():
+    x, margins, labels, rows, folds = _study(extra_signal=1.5)
+    changed = x.clone()
+    in_fold_0 = torch.tensor([fold == 0 for fold in folds])
+    changed[in_fold_0] = torch.randn(int(in_fold_0.sum()), x.shape[1], generator=torch.Generator().manual_seed(9))
+
+    before = nested_combined_scores(x, margins, labels, rows, folds)["folds"][0]
+    after = nested_combined_scores(changed, margins, labels, rows, folds)["folds"][0]
+
+    # 묶음 0의 벡터를 바꿔도 묶음 0의 결합 계수와 안쪽 점수는 그대로다. 바깥 점수(묶음 0의 평가)만 바뀐다
+    assert before["combiner"] == after["combiner"] and before["inner_scores"] == after["inner_scores"]
+    assert before["outer_scores"] != after["outer_scores"]
+
+
+def test_nested_scores_record_images_dropped_from_training():
+    x, margins, labels, rows, folds = _study(extra_signal=1.5)
+    test_case = folds.index(0)
+    other_fold_case = next(i for i, fold in enumerate(folds) if fold != 0)
+    rows[other_fold_case]["image_ids"] = rows[test_case]["image_ids"]  # 다른 묶음의 케이스가 묶음 0의 이미지를 쓴다
+
+    nested = nested_combined_scores(x, margins, labels, rows, folds)
+
+    assert nested["folds"][0]["dropped_outer"] == 1
+    assert [record["fold"] for record in nested["folds"]] == sorted(set(folds))
