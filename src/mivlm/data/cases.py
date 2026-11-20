@@ -107,17 +107,31 @@ def single_image_items(pools: list[dict]) -> list[dict]:
     return items
 
 
-def pilot_cases(cases: list[dict]) -> list[dict]:
+POOL_PILOT_VARIANTS = ["PPP", "PPN", "PNP", "NPP"]  # 새 풀의 파일럿에서 돌아가며 고르는 변형 (N이 없거나 하나)
+
+
+def pilot_cases(cases: list[dict], pool: str | None = None) -> list[dict]:
     """파일럿용 케이스: 클래스마다 첫 pair(group_01의 pair 1)에서 하나씩 고른다
 
-    변형은 클래스 순서대로 돌아가며 고른다 (1번째 클래스는 PPP, 2번째는 PPN, …).
-    그래서 모든 클래스와 모든 변형이 섞여 들어간다.
+    변형은 클래스 순서대로 돌아가며 고른다 (1번째 클래스는 첫 변형, 2번째는 둘째 변형, …). 무작위가 없다.
+    기존 탐색 데이터(pool None)는 그 pair의 변형 6개를 파일 순서대로 돌아가며 고른다 (예전과 같다).
+    새 풀은 POOL_PILOT_VARIANTS에 든 변형만 파일 순서대로 돌아가며 고른다. 클래스가 20개면 변형마다 5개다.
     """
     first_pairs = {}  # object -> 그 클래스 첫 pair의 케이스들 (파일에 적힌 변형 순서 그대로)
     for case in cases:
-        if case["group_id"].startswith("group_01_") and case["pair_id"] == 1:
+        if (case["group_id"].startswith("group_01_") and case["pair_id"] == 1
+                and (pool is None or case["variant"] in POOL_PILOT_VARIANTS)):
             first_pairs.setdefault(case["object"], []).append(case)
     return [variants[i % len(variants)] for i, variants in enumerate(first_pairs.values())]
+
+
+def items_for_cases(items: list[dict], cases: list[dict]) -> list[dict]:
+    """이미지 1장 항목(single_image_items) 중 cases에 쓰인 (클래스, 이미지)에 해당하는 것 (items 순서 그대로)
+
+    파일럿에서 B(이미지 1장씩)를 A의 파일럿 케이스와 같은 이미지로 돌리는 데 쓴다.
+    """
+    wanted = {(case["object"], image_id) for case in cases for image_id in case["image_ids"]}
+    return [item for item in items if (item["object"], item["image_id"]) in wanted]
 
 
 def per_image_queries(cases: list[dict]) -> list[dict]:

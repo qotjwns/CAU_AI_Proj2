@@ -8,6 +8,7 @@
 이것은 실수를 막는 장치일 뿐, 사전 등록(Stage 2)이 끝났는지를 확인하지는 않는다. 언제 열지는 등록 문서의 규칙을 따른다.
 """
 import argparse
+import hashlib
 import json
 import platform
 import subprocess
@@ -28,6 +29,9 @@ from mivlm.models.loading import load_model
 
 # 이어서 돌릴 때 기존 실행과 비교하지 않는 meta 항목
 NOT_COMPARED = ("started_at", "command", "git")
+# 나중에 meta에 더한 항목. 기존 meta에 이 항목이 없으면 비교하지 않는다 (그 전의 실행을 그대로 이어 돌릴 수 있게).
+# 기존 meta에 있으면 다른 항목처럼 비교한다
+ADDED_LATER = ("loading",)
 
 
 def parse_run_args(description: str, argv: list[str] | None = None) -> argparse.Namespace:
@@ -82,6 +86,31 @@ def git_state() -> dict:
     return {"commit": _git("rev-parse", "HEAD"), "dirty": _git("status", "--porcelain") != ""}
 
 
+def _cached_commit(repo_id: str, filename: str) -> str | None:
+    """캐시에 받아 둔 파일의 snapshot 폴더 이름 = 그 버전의 commit SHA. 캐시에 없으면 None"""
+    path = try_to_load_from_cache(repo_id, filename)
+    return Path(path).parent.name if isinstance(path, str) else None
+
+
+def loading_meta(repo_id: str, model, processor) -> dict:
+    """모델과 processor를 어떻게 불러왔는지: 클래스, processor 파일의 revision, chat template의 SHA-256,
+    image processor의 실제 설정, tokenizers 버전
+
+    processor의 revision은 processor 설정 파일(preprocessor_config.json, 없으면 processor_config.json)이 놓인
+    snapshot으로 정한다. chat template은 system 문구나 thinking 지시처럼 질문 앞뒤에 붙는 글자를 정하므로 해시로 남긴다.
+    """
+    template = getattr(processor, "chat_template", None) or getattr(processor.tokenizer, "chat_template", None)
+    return {
+        "model_class": type(model).__name__,
+        "processor_class": type(processor).__name__,
+        "processor_commit": (_cached_commit(repo_id, "preprocessor_config.json")
+                             or _cached_commit(repo_id, "processor_config.json")),
+        "chat_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest() if template else None,
+        "image_processor_config": json.loads(processor.image_processor.to_json_string()),
+        "tokenizers": _package_version("tokenizers"),
+    }
+
+
 def build_meta(experiment: str, args: argparse.Namespace, n_items: int, model, processor, question: str) -> dict:
     """실행 조건 기록. 결과를 좌우하는 조건을 모두 담는다"""
     repo_id = load_models_config()[args.model]
@@ -110,6 +139,7 @@ def build_meta(experiment: str, args: argparse.Namespace, n_items: int, model, p
         },
         # repetition_penalty는 따로 넘기지 않아서 모델 기본값이 적용된다
         "generation": {**GENERATION_KWARGS, "repetition_penalty": model.generation_config.repetition_penalty},
+        "loading": loading_meta(repo_id, model, processor),
         "question": question,
         **data_meta(args.pool),  # 풀 이름(풀을 쓴 경우만)과 케이스·풀 파일의 SHA-256
         "environment": {
@@ -128,6 +158,7 @@ def check_or_save_meta(run_dir: Path, meta: dict) -> None:
     조건이 다른 실행의 결과가 한 results.jsonl에 섞이는 것을 막는다. 기존 meta.json은 덮어쓰지 않는다.
     비교는 두 meta의 키를 모두 본다 (한쪽에만 있는 키, 예: "pool"도 다른 조건이다). 모델, dtype, 풀, 데이터 해시,
     질문, 생성 설정, 파일럿 여부가 모두 여기에 들어간다.
+    다만 ADDED_LATER의 항목은 기존 meta에 없으면 비교하지 않는다. 그 항목이 생기기 전의 실행을 이어 돌릴 수 있게 한다.
     """
     meta_path = run_dir / "meta.json"
     if not meta_path.exists():
@@ -137,7 +168,8 @@ def check_or_save_meta(run_dir: Path, meta: dict) -> None:
     with open(meta_path) as f:
         old_meta = json.load(f)
     changed = [key for key in dict.fromkeys([*meta, *old_meta])
-               if key not in NOT_COMPARED and meta.get(key) != old_meta.get(key)]
+               if key not in NOT_COMPARED and not (key in ADDED_LATER and key not in old_meta)
+               and meta.get(key) != old_meta.get(key)]
     if changed:
         raise RuntimeError(f"{run_dir}의 기존 실행과 조건이 다름: {changed}. 폴더를 지우고 다시 실행")
 

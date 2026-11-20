@@ -8,11 +8,14 @@ pytest tests/integration/test_pool_data.py -v
 파일이 없으면 건너뛴다.
 """
 import json
+from collections import Counter
 
 import pytest
 
 from mivlm.config import CASES_DIR, CASES_JSONL, PREDICTIONS_DIR
-from mivlm.data.cases import data_sha256, load_cases, load_pools, run_pool
+from mivlm.data.cases import (
+    data_sha256, items_for_cases, load_cases, load_pools, pilot_cases, run_pool, single_image_items,
+)
 
 ORIGINAL_SHA256 = {  # 기존 실행들의 meta.json에 남은 값
     "cases_sha256": "2c21311b716413ad8eaba6d361e086ea1c52864b95d4b084dca0ceb3de5a0af4",
@@ -59,3 +62,15 @@ def test_existing_runs_pass_the_provenance_check(run):
         pytest.skip(f"{run} 실행 기록이 없음")
 
     assert run_pool(run_dir) is None
+
+
+@pytest.mark.skipif(not (CASES_DIR / "dev" / "cases.jsonl").exists(), reason="dev 풀이 없음")
+def test_the_dev_pilot_covers_every_class_and_the_four_variants_and_b_uses_the_same_images():
+    pilot = pilot_cases(load_cases("dev"), "dev")
+    items = items_for_cases(single_image_items(load_pools("dev")), pilot)
+
+    assert len(pilot) == 20 and len({case["object"] for case in pilot}) == 20
+    assert Counter(case["variant"] for case in pilot) == {"PPP": 5, "PPN": 5, "PNP": 5, "NPP": 5}
+    assert len(items) == 60  # 케이스마다 이미지 3장
+    pilot_images = {(case["object"], image_id) for case in pilot for image_id in case["image_ids"]}
+    assert {(item["object"], item["image_id"]) for item in items} == pilot_images

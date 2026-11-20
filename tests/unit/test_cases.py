@@ -2,7 +2,10 @@
 src/mivlm/data/cases.py 단위 테스트
 pytest tests/unit/test_cases.py -v
 """
-from mivlm.data.cases import case_pairs, image_linked_classes, per_image_queries, pilot_cases, single_image_items
+from mivlm.data.cases import (
+    POOL_PILOT_VARIANTS, case_pairs, image_linked_classes, items_for_cases, per_image_queries, pilot_cases,
+    single_image_items,
+)
 
 VARIANTS = ["PPP", "PPN", "PNN", "NNN", "NPP", "PNP"]
 CLASSES = ["person", "dining table", "chair", "couch", "cat", "train", "bus"]
@@ -37,6 +40,28 @@ def test_all_from_first_pair_of_first_group():
     for case in pilot_cases(_make_cases()):
         assert case["group_id"].startswith("group_01_")
         assert case["pair_id"] == 1
+
+
+def test_new_pool_pilots_rotate_only_over_the_four_variants():
+    picked = pilot_cases(_make_cases(), pool="dev")
+
+    assert POOL_PILOT_VARIANTS == ["PPP", "PPN", "PNP", "NPP"]
+    assert [case["object"] for case in picked] == CLASSES
+    # 첫 pair에서 PNN, NNN을 빼고 파일 순서(PPP, PPN, NPP, PNP)대로 돌아간다
+    assert [case["variant"] for case in picked] == ["PPP", "PPN", "NPP", "PNP", "PPP", "PPN", "NPP"]
+    assert pilot_cases(_make_cases(), pool="dev") == picked  # 무작위가 없다
+
+
+def test_the_exploration_data_pilot_is_unchanged_by_the_pool_argument():
+    assert pilot_cases(_make_cases(), pool=None) == pilot_cases(_make_cases())
+
+
+def test_items_for_cases_keeps_the_items_of_the_case_images_and_classes():
+    items = [{"object": "cat", "image_id": 1}, {"object": "cat", "image_id": 2}, {"object": "dog", "image_id": 1},
+             {"object": "cat", "image_id": 9}]
+    cases = [{"object": "cat", "image_ids": [9, 1, 5]}]
+
+    assert items_for_cases(items, cases) == [items[0], items[3]]  # dog의 이미지 1은 클래스가 달라 빠진다
 
 
 # ---------------------------------------------------------- single_image_items

@@ -94,11 +94,23 @@ def yes_no_token_ids(tokenizer) -> tuple[int, int]:
     return yes_id, no_id
 
 
+def first_generated_token(tokenizer, sequences: torch.Tensor, input_length: int) -> tuple[int, str]:
+    """실제로 생성된 첫 토큰: (token id, 그 토큰 하나를 디코딩한 문자열)
+
+    sequences: generate가 돌려준 토큰 id, shape (1, 입력 길이 + 생성 길이). 입력 바로 뒤의 토큰이 첫 생성 토큰이다.
+    특수 토큰(예: <think>)과 앞 공백을 그대로 남겨 디코딩한다. 첫 토큰이 정말 "Yes"나 "No"인지 확인하는 데 쓴다.
+    """
+    token_id = int(sequences[0, input_length])
+    return token_id, tokenizer.decode([token_id])
+
+
 def infer(model, processor, messages: list[dict]) -> dict:
     """메시지 하나를 추론한다 (batch 1, greedy, 최대 8토큰)
 
     yes_logit, no_logit: 첫 생성 위치의 가공 전 logit에서 "Yes", "No" 토큰의 값
     logit_margin: yes_logit - no_logit. 양수면 첫 토큰으로 Yes가 No보다 그럴듯하다는 뜻
+    first_token_id, first_token: 실제로 생성된 첫 토큰 (first_generated_token). 생성은 repetition penalty 같은
+        후처리를 거친 점수에서 고르므로, 가공 전 logit의 margin 부호와 다를 수 있다. 두 값을 따로 남긴다
     """
     tokenizer = processor.tokenizer
     yes_id, no_id = yes_no_token_ids(tokenizer)
@@ -112,12 +124,15 @@ def infer(model, processor, messages: list[dict]) -> dict:
 
     yes_logit = first_logits[yes_id].item()
     no_logit = first_logits[no_id].item()
+    first_token_id, first_token = first_generated_token(tokenizer, out.sequences, input_length)
     return {
         "raw_response": raw_response,
         "prediction": parse_yes_no(raw_response),
         "yes_logit": yes_logit,
         "no_logit": no_logit,
         "logit_margin": yes_logit - no_logit,
+        "first_token_id": first_token_id,
+        "first_token": first_token,
         "input_token_count": input_length,
         "image_token_count": (inputs["input_ids"] == processor.image_token_id).sum().item(),
     }

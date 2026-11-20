@@ -7,8 +7,8 @@ import torch
 
 from mivlm.data.image import image_path
 from mivlm.models.inference import (
-    build_messages, case_messages, image_token_spans, parse_yes_no, per_image_messages, single_image_messages,
-    yes_no_token_ids,
+    build_messages, case_messages, first_generated_token, image_token_spans, parse_yes_no, per_image_messages,
+    single_image_messages, yes_no_token_ids,
 )
 
 PAD = 9  # 테스트용 가짜 이미지 토큰 id
@@ -146,6 +146,10 @@ class FakeTokenizer:
     def encode(self, text: str, add_special_tokens: bool) -> list[int]:
         return self.ids_by_text[text]
 
+    def decode(self, ids: list[int]) -> str:
+        texts = {tuple(value): text for text, value in self.ids_by_text.items()}
+        return "".join(texts[(token_id,)] for token_id in ids)
+
 
 def test_yes_no_token_ids_come_in_yes_no_order():
     assert yes_no_token_ids(FakeTokenizer({"Yes": [7], "No": [3]})) == (7, 3)
@@ -154,3 +158,21 @@ def test_yes_no_token_ids_come_in_yes_no_order():
 def test_yes_or_no_split_into_several_tokens_is_an_error():
     with pytest.raises(ValueError):
         yes_no_token_ids(FakeTokenizer({"Yes": [7, 8], "No": [3]}))
+
+
+# ---------------------------------------------------------------- first_generated_token
+
+
+def test_first_generated_token_is_the_token_right_after_the_input():
+    tokenizer = FakeTokenizer({"Yes": [7], "No": [3], " Yes": [11], "<think>": [5]})
+    sequences = torch.tensor([[1, 2, 4, 7, 3]])  # 입력 3개(1, 2, 4) 뒤에 Yes, No가 생성됐다
+
+    assert first_generated_token(tokenizer, sequences, input_length=3) == (7, "Yes")
+
+
+def test_first_generated_token_keeps_spaces_and_special_tokens():
+    tokenizer = FakeTokenizer({"Yes": [7], " Yes": [11], "<think>": [5]})
+
+    # 앞 공백이 붙은 " Yes"나 <think>로 시작하면 그대로 드러나야 "Yes"와 구분할 수 있다
+    assert first_generated_token(tokenizer, torch.tensor([[1, 11]]), input_length=1) == (11, " Yes")
+    assert first_generated_token(tokenizer, torch.tensor([[1, 5, 7]]), input_length=1) == (5, "<think>")
