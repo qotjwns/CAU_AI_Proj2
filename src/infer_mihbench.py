@@ -12,8 +12,13 @@
     python src/infer_mihbench.py --model qwen2.5-vl-3b                            # all 5 tasks
     python src/infer_mihbench.py --model internvl2.5-4b --task count --limit 20  # quick check
     python src/infer_mihbench.py --model qwen2.5-vl-3b --load-4bit               # official Qwen setting
+    python src/infer_mihbench.py --adapter runs/sft/qwen2.5-vl-3b-pilot          # a trained LoRA (src/train.py)
     Folder name: <model>[-4bit][-sdpa], e.g. qwen2.5-vl-3b-4bit. A folder whose answers were made with another
     prompt (the earlier runs without the instruction, now <model>-noyn) is never resumed.
+    --adapter runs/<method>/<run>: the base model and method come from the run's args.json, the LoRA is merged
+    into the base weights (kept separate on 4-bit weights), and the answers go to
+    results/mihbench/<method>/<run>[-4bit][-sdpa]/ (python src/eval_mihbench.py --method <method> scores them).
+    It stops if configs/prompts.yaml or the base model's commit differ from what the run trained with.
     Models (same names as scripts/download_models.py): qwen2.5-vl-3b, qwen2.5-vl-7b, internvl2.5-4b, llava-ov-7b
 """
 import argparse
@@ -197,14 +202,27 @@ def check_prompt(out_dir, tasks, template, legacy):
                              "(configs/prompts.yaml). Move the folder away and re-run.")
 
 
-def run_info(name, model_dir, model, load_4bit, template):
-    """The environment that produced the answers: model files, precision, prompt, packages, hardware, date."""
+def model_commit(model_dir):
     meta = model_dir / ".cache" / "huggingface" / "download" / "config.json.metadata"  # line 1: commit
+    return meta.read_text().splitlines()[0] if meta.exists() else None
+
+
+def attach_adapter(wrapper, adapter_dir, merge):
+    """Put a trained LoRA (peft folder) on the wrapper's model: merged into the weights, or kept as separate
+    layers (4-bit weights cannot take a merge). generate() and chat() reach the base model either way."""
+    from peft import PeftModel
+    model = PeftModel.from_pretrained(wrapper.model, adapter_dir).eval()
+    wrapper.model = model.merge_and_unload() if merge else model
+
+
+def run_info(name, model_dir, model, load_4bit, template, method="vanilla", adapter=None):
+    """The environment that produced the answers: model files, precision, prompt, packages, hardware, date,
+    and for a trained model its run folder."""
     device = model.model.device
     info = {
-        "method": "vanilla",
+        "method": method,
         "model": name,
-        "model_commit": meta.read_text().splitlines()[0] if meta.exists() else None,
+        "model_commit": model_commit(model_dir),
         "load_4bit": load_4bit,
         "attn": model.attn,
         "prompt": template,
@@ -216,6 +234,9 @@ def run_info(name, model_dir, model, load_4bit, template):
     }
     if load_4bit:
         info["bitsandbytes"] = metadata.version("bitsandbytes")
+    if adapter:
+        info.update(adapter=str(adapter.relative_to(PROJECT)) if adapter.is_relative_to(PROJECT) else str(adapter),
+                    peft=metadata.version("peft"))
     return info
 
 
@@ -238,7 +259,8 @@ def run_task(model, task, out_dir, limit, template):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", required=True, choices=MODELS)
+    ap.add_argument("--model", choices=MODELS, help="required unless --adapter gives it")
+    ap.add_argument("--adapter", type=Path, help="a training run folder, runs/<method>/<run> (src/train.py)")
     ap.add_argument("--task", nargs="+", default=["all"], choices=[*TASKS, "all"])
     ap.add_argument("--limit", type=int, help="only the first N questions of each task")
     ap.add_argument("--load-4bit", action="store_true",
@@ -246,6 +268,19 @@ def main():
     ap.add_argument("--sdpa", action="store_true",
                     help="InternVL only: sdpa attention instead of the official eager (needed on 24 GB GPUs)")
     args = ap.parse_args()
+    method, run_name, run = "vanilla", None, None
+    if args.adapter:
+        if not args.adapter.is_absolute() and not args.adapter.exists():
+            args.adapter = PROJECT / args.adapter
+        args.adapter = args.adapter.resolve()
+        if not (args.adapter / "args.json").exists() or not (args.adapter / "adapter").is_dir():
+            ap.error(f"{args.adapter} is not a training run folder (args.json and adapter/ from src/train.py)")
+        run = json.loads((args.adapter / "args.json").read_text())
+        if args.model and args.model != run["model"]:
+            ap.error(f"--model {args.model}, but {args.adapter} trained {run['model']}")
+        args.model, method, run_name = run["model"], run["method"], args.adapter.name
+    elif not args.model:
+        ap.error("--model or --adapter is required")
     tasks = list(TASKS) if "all" in args.task else list(dict.fromkeys(args.task))
     folder, wrapper = MODELS[args.model]
     if args.load_4bit and wrapper is not QwenVL:
@@ -257,14 +292,22 @@ def main():
     if not model_dir.is_dir():
         raise SystemExit(f"{model_dir} not found: python scripts/download_models.py --model {args.model}")
     suffix = ("-4bit" if args.load_4bit else "") + ("-sdpa" if args.sdpa else "")
-    out_dir = PROJECT / "results" / "mihbench" / "vanilla" / (args.model + suffix)
+    out_dir = PROJECT / "results" / "mihbench" / method / ((run_name or args.model) + suffix)
     template = PROMPTS[wrapper.FAMILY]
+    if run and run.get("prompt") != template:
+        raise SystemExit(f"{args.adapter} trained with the prompt {run.get('prompt')!r}, configs/prompts.yaml now "
+                         f"gives {template!r}: evaluate with the prompt it trained on.")
+    if run and run.get("model_commit") and run["model_commit"] != model_commit(model_dir):
+        raise SystemExit(f"{args.adapter} trained on {args.model} commit {run['model_commit']}, "
+                         f"{model_dir} is {model_commit(model_dir)}")
     check_prompt(out_dir, tasks, template, wrapper.LEGACY_PROMPT)  # before loading the model
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = InternVL(model_dir, sdpa=True) if args.sdpa else wrapper(model_dir, args.load_4bit)
-    info = run_info(args.model, model_dir, model, args.load_4bit, template)
-    print(f"{args.model} on {info['device']}, prompt {template!r}")
+    if args.adapter:
+        attach_adapter(model, args.adapter / "adapter", merge=not args.load_4bit)
+    info = run_info(args.model, model_dir, model, args.load_4bit, template, method, args.adapter)
+    print(f"{args.model}{f' + {method} LoRA ({run_name})' if run else ''} on {info['device']}, prompt {template!r}")
     metrics_path = out_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
     for task in tasks:
