@@ -7,6 +7,10 @@
       group-sft  Grouped SFT: the 2,340 groups shuffled, each batch holds whole groups (A, B, C, D in the same
                  optimizer step, always half Yes); the same cross-entropy
     Both draw a new order every epoch. One epoch is 1,170 optimizer steps at --batch-size 8 for either method.
+    Gradient accumulation (fit): --grad-accum batches per optimizer step. When an epoch's batch count does not
+    divide evenly, its last step takes the batches left over, each loss scaled by 1 / their number, so an epoch
+    always ends with a step and no gradient carries into the next one: ceil(batches / grad_accum) steps per epoch.
+    The scheduler is planned for exactly the steps taken, and the run stops with an error if they differ.
     Prompt: the 3 images, then the model family's prompt from configs/prompts.yaml filled with
     "Is there a/an <class> in all 3 images?", built as in its MIHBench inference (src/cf_data.py has one collator
     per model family).
@@ -36,6 +40,7 @@
 import argparse
 import datetime
 import json
+import math
 import platform
 import random
 import sys
@@ -131,6 +136,59 @@ METHODS = {  # name -> (batches of single cases or of whole groups, loss)
 }
 
 
+def items_per_batch(batching, batch_size):
+    """DataLoader batch size: batch_size cases, as single cases or as whole groups of 4."""
+    return batch_size // (1 if batching == "case" else 4)
+
+
+def accumulation_plan(n_batches, grad_accum):
+    """[(loss scale, optimizer step after this batch)] for one epoch of n_batches. Batches go in groups of
+    grad_accum; a shorter last group is scaled by 1 / its own size and still ends with a step."""
+    plan = []
+    for start in range(0, n_batches, grad_accum):
+        size = min(grad_accum, n_batches - start)
+        plan += [(1 / size, j == size - 1) for j in range(size)]
+    return plan
+
+
+def planned_steps(n_batches, grad_accum, epochs, max_steps=None):
+    """Optimizer steps the run will take: ceil(n_batches / grad_accum) per epoch, capped at max_steps."""
+    steps = epochs * math.ceil(n_batches / grad_accum)
+    return min(steps, max_steps) if max_steps else steps
+
+
+def fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum, on_step=None, on_epoch=None):
+    """The optimizer loop every method shares. loss_of(batch) -> loss; on_step(step, epoch, mean loss of the
+    step's batches, grad norm) after each optimizer step; on_epoch(step, epoch) after each epoch (also the last,
+    cut short by steps). Gradients are cleared at every epoch start and after every step, so none crosses epochs.
+    Returns the optimizer steps taken."""
+    step = 0
+    for epoch in range(1, epochs + 1):
+        opt.zero_grad(set_to_none=True)
+        losses = []
+        for (scale, ends_step), batch in zip(accumulation_plan(len(loader), grad_accum), loader):
+            loss = loss_of(batch)
+            (loss * scale).backward()
+            losses.append(loss.item())
+            if not ends_step:
+                continue
+            grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0).item()
+            opt.step()
+            sched.step()
+            opt.zero_grad(set_to_none=True)
+            step += 1
+            if on_step:
+                on_step(step, epoch, sum(losses) / len(losses), grad_norm)
+            losses = []
+            if step >= steps:
+                break
+        if on_epoch:
+            on_epoch(step, epoch)
+        if step >= steps:
+            break
+    return step
+
+
 @torch.no_grad()
 def evaluate(model, loader, collate, device):
     model.eval()
@@ -202,12 +260,10 @@ def main():
     if args.eval_groups:
         dev = Subset(dev, sorted(random.Random(args.seed).sample(range(len(dev)), args.eval_groups)))
     loader_kw = {"collate_fn": collate, "num_workers": args.workers, "persistent_workers": args.workers > 0}
-    train_loader = DataLoader(train, batch_size=args.batch_size // (1 if batching == "case" else 4), shuffle=True,
+    train_loader = DataLoader(train, batch_size=items_per_batch(batching, args.batch_size), shuffle=True,
                               generator=torch.Generator().manual_seed(args.seed), **loader_kw)
-    dev_loader = DataLoader(dev, batch_size=args.batch_size // 4, shuffle=False, **loader_kw)
-    steps = args.epochs * len(train_loader) // args.grad_accum
-    if args.max_steps:
-        steps = min(steps, args.max_steps)
+    dev_loader = DataLoader(dev, batch_size=items_per_batch("group", args.batch_size), shuffle=False, **loader_kw)
+    steps = planned_steps(len(train_loader), args.grad_accum, args.epochs, args.max_steps)
 
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
@@ -229,36 +285,30 @@ def main():
     print(f"dev before training: {dev_metrics}")
 
     train_mode(model)
-    step, window = 0, []
+    window = []
     bar = tqdm(total=steps, desc=args.method)
-    for epoch in range(1, args.epochs + 1):
-        for i, batch in enumerate(train_loader):
-            loss = loss_fn(answer_logits(model, batch, device), batch)
-            (loss / args.grad_accum).backward()
-            window.append(loss.item())
-            if (i + 1) % args.grad_accum:
-                continue
-            grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0).item()
-            opt.step()
-            sched.step()
-            opt.zero_grad(set_to_none=True)
-            step += 1
-            bar.update()
-            bar.set_postfix(loss=f"{sum(window) / len(window):.4f}")
-            if step % args.log_every == 0 or step == steps:
-                write({"step": step, "epoch": epoch, "loss": round(sum(window) / len(window), 5),
-                       "grad_norm": round(grad_norm, 4), "lr": sched.get_last_lr()[0]})
-                window = []
-            if step >= steps:
-                break
+
+    def on_step(step, epoch, loss, grad_norm):
+        window.append(loss)
+        bar.update()
+        bar.set_postfix(loss=f"{sum(window) / len(window):.4f}")
+        if step % args.log_every == 0 or step == steps:
+            write({"step": step, "epoch": epoch, "loss": round(sum(window) / len(window), 5),
+                   "grad_norm": round(grad_norm, 4), "lr": sched.get_last_lr()[0]})
+            window.clear()
+
+    def on_epoch(step, epoch):
         model.save_pretrained(run_dir / "adapter")
         dev_metrics = evaluate(model, dev_loader, collate, device)
         write({"step": step, "epoch": epoch, "dev": dev_metrics})
         print(f"\ndev after epoch {epoch}: {dev_metrics}")
-        if step >= steps:
-            break
+
+    taken = fit(params, opt, sched, train_loader, lambda batch: loss_fn(answer_logits(model, batch, device), batch),
+                args.epochs, steps, args.grad_accum, on_step, on_epoch)
     bar.close()
     log.close()
+    if taken != steps or sched.last_epoch != steps:
+        raise RuntimeError(f"took {taken} optimizer steps and {sched.last_epoch} scheduler steps, planned {steps}")
     print(f"\n{run_dir / 'adapter'}")
 
 
