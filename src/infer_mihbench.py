@@ -7,6 +7,8 @@
                                                       environment (model commit, 4-bit, versions, GPU, date) per task
     python src/infer_mihbench.py --model qwen2.5-vl-3b                            # all 5 tasks
     python src/infer_mihbench.py --model internvl2.5-4b --task count --limit 20  # quick check
+    python src/infer_mihbench.py --model qwen2.5-vl-3b --load-4bit --yes-or-no   # official Qwen, + yes/no
+    Folder name: <model>[-4bit][-sdpa][-yn], e.g. qwen2.5-vl-3b-4bit-yn
     Models (same names as scripts/download_models.py): qwen2.5-vl-3b, qwen2.5-vl-7b, internvl2.5-4b, llava-ov-7b
 """
 import argparse
@@ -43,17 +45,21 @@ def open_images(paths, size=None):
 
 class QwenVL:
     """Qwen2.5-VL/qwen2.5vl_eval.py: images resized to 672x672 (576 tokens each), the question as is,
-    greedy, at most 128 new tokens. The official run loads 4-bit weights (--load-4bit)."""
+    greedy, at most 128 new tokens. --load-4bit is the official run: 4-bit weights and eager attention
+    (without it: bf16 and sdpa). --yes-or-no appends SUFFIX, the official script's --yes_or_no 1."""
+    SUFFIX = " Please answer with Yes or No."
 
     def __init__(self, path, load_4bit=False):
         from transformers import Qwen2_5_VLForConditionalGeneration
         kwargs = {"dtype": torch.bfloat16}
         if load_4bit:  # needs CUDA and `pip install bitsandbytes`
             from transformers import BitsAndBytesConfig
-            kwargs.update(quantization_config=BitsAndBytesConfig(load_in_4bit=True), device_map="auto")
+            kwargs.update(quantization_config=BitsAndBytesConfig(load_in_4bit=True), device_map="auto",
+                          attn_implementation="eager")
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(path, **kwargs).eval()
         if not load_4bit:
             self.model.to(pick_device())
+        self.attn = self.model.config._attn_implementation
         self.processor = AutoProcessor.from_pretrained(path, use_fast=False)  # the official run's preprocessing
 
     @torch.inference_mode()
@@ -90,7 +96,8 @@ def internvl_tiles(image, max_num=12, size=448):
 class InternVL:
     """InternVL2.5/internvl2.5_eval.py: each image (not resized) cut into up to 12 448px tiles plus a thumbnail,
     the tiles of all images given as one '<image>', ' Please answer with yes or no.' appended,
-    greedy, at most 1024 new tokens. The official run uses eager attention, which builds a
+    greedy, at most 1024 new tokens (the suffix is always there, so no --yes-or-no). The official run uses
+    eager attention, which builds a
     tokens x tokens matrix per layer and runs out of memory on 24 GB GPUs; sdpa=True computes the same
     attention without it."""
 
@@ -100,6 +107,7 @@ class InternVL:
                                                trust_remote_code=True).eval().to(pick_device())
         if sdpa:  # the remote code hard-wires eager into the language model's config
             self.model.language_model.config._attn_implementation = "sdpa"
+        self.attn = self.model.language_model.config._attn_implementation
         self.tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, use_fast=False)
         self.transform = T.Compose([T.Resize((448, 448), interpolation=T.InterpolationMode.BICUBIC), T.ToTensor(),
                                     T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
@@ -116,12 +124,14 @@ class InternVL:
 class LlavaOV:
     """LLaVA-NeXT-Interleave/llava_next_eval.py (the paper's LLaVA): images resized to 672x672 and each
     encoded once at the base resolution, '<image>\\n' per image then '\\n' + the question, greedy,
-    at most 1024 new tokens, fp16."""
+    at most 1024 new tokens, fp16. --yes-or-no appends SUFFIX, the official script's --yes_or_no 1."""
+    SUFFIX = " Please answer with yes or no."
 
     def __init__(self, path, load_4bit=False):
         from transformers import LlavaOnevisionForConditionalGeneration
         self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(path, dtype=torch.float16).eval()
         self.model.to(pick_device())
+        self.attn = self.model.config._attn_implementation
         self.processor = AutoProcessor.from_pretrained(path, use_fast=False)
 
     @torch.inference_mode()
@@ -162,8 +172,8 @@ def read_answers(path):
     return rows
 
 
-def run_info(name, model_dir, model, load_4bit, sdpa=False):
-    """The environment that produced the answers: model files, precision, packages, hardware, date."""
+def run_info(name, model_dir, model, load_4bit, prompt_suffix=""):
+    """The environment that produced the answers: model files, precision, prompt, packages, hardware, date."""
     meta = model_dir / ".cache" / "huggingface" / "download" / "config.json.metadata"  # line 1: commit
     device = model.model.device
     info = {
@@ -171,7 +181,8 @@ def run_info(name, model_dir, model, load_4bit, sdpa=False):
         "model": name,
         "model_commit": meta.read_text().splitlines()[0] if meta.exists() else None,
         "load_4bit": load_4bit,
-        "attn": "sdpa" if sdpa else "official",
+        "attn": model.attn,
+        "prompt_suffix": prompt_suffix,
         "device": torch.cuda.get_device_name(device) if device.type == "cuda" else device.type,
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -183,14 +194,14 @@ def run_info(name, model_dir, model, load_4bit, sdpa=False):
     return info
 
 
-def run_task(model, task, out_dir, limit):
+def run_task(model, task, out_dir, limit, prompt_suffix=""):
     questions = load_questions(task)[:limit]
     path = out_dir / f"{task}.jsonl"
     answers = read_answers(path)
     todo = [q for q in questions if q["question_id"] not in answers]
     with open(path, "a") as f:
         for q in tqdm(todo, desc=task, initial=len(questions) - len(todo), total=len(questions)):
-            text = model.answer(q["image_paths"], q["text"])
+            text = model.answer(q["image_paths"], q["text"] + prompt_suffix)
             row = {"question_id": q["question_id"], "question": q["text"], "image_list": q["image_list"],
                    "text": text, "pred": parse_yes_no(text), "label": q["label"], "injected": q.get("injected")}
             f.write(json.dumps(row) + "\n")
@@ -204,7 +215,10 @@ def main():
     ap.add_argument("--model", required=True, choices=MODELS)
     ap.add_argument("--task", nargs="+", default=["all"], choices=[*TASKS, "all"])
     ap.add_argument("--limit", type=int, help="only the first N questions of each task")
-    ap.add_argument("--load-4bit", action="store_true", help="4-bit weights like the official Qwen run (CUDA only)")
+    ap.add_argument("--load-4bit", action="store_true",
+                    help="Qwen only: the official run, 4-bit weights and eager attention (CUDA, bitsandbytes)")
+    ap.add_argument("--yes-or-no", action="store_true",
+                    help="Qwen, LLaVA: append the official yes/no instruction (their scripts' --yes_or_no 1)")
     ap.add_argument("--sdpa", action="store_true",
                     help="InternVL only: sdpa attention instead of the official eager (needed on 24 GB GPUs)")
     args = ap.parse_args()
@@ -214,21 +228,24 @@ def main():
         ap.error("--load-4bit is only for the Qwen models (the other official scripts run full precision)")
     if args.sdpa and wrapper is not InternVL:
         ap.error("--sdpa is only for InternVL (the other models already use sdpa)")
+    if args.yes_or_no and wrapper is InternVL:
+        ap.error("--yes-or-no: InternVL's official prompt always ends with ' Please answer with yes or no.'")
+    prompt_suffix = wrapper.SUFFIX if args.yes_or_no else ""
 
     model_dir = PROJECT / "models" / folder
     if not model_dir.is_dir():
         raise SystemExit(f"{model_dir} not found: python scripts/download_models.py --model {args.model}")
-    suffix = ("-4bit" if args.load_4bit else "") + ("-sdpa" if args.sdpa else "")
+    suffix = ("-4bit" if args.load_4bit else "") + ("-sdpa" if args.sdpa else "") + ("-yn" if args.yes_or_no else "")
     out_dir = PROJECT / "results" / "mihbench" / "vanilla" / (args.model + suffix)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = InternVL(model_dir, sdpa=True) if args.sdpa else wrapper(model_dir, args.load_4bit)
-    info = run_info(args.model, model_dir, model, args.load_4bit, args.sdpa)
+    info = run_info(args.model, model_dir, model, args.load_4bit, prompt_suffix)
     print(f"{args.model} on {info['device']}")
     metrics_path = out_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
     for task in tasks:
-        result, n_new = run_task(model, task, out_dir, args.limit)
+        result, n_new = run_task(model, task, out_dir, args.limit, prompt_suffix)
         old = metrics.get(task, {}).get("run")
         # Only re-scored (no new answers): keep the environment that produced the answers.
         metrics[task] = {**result, "run": info if n_new or old is None else old}
