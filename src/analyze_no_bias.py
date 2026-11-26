@@ -9,9 +9,10 @@
         d  when exactly one image lacks the object, how often the answer names that image (chance 1/3)
       results/mihbench/<method>/no_bias.json   the numbers behind the panels
     Panels c and d read the explanation after "No", so they only cover models that explain (Qwen); the regex
-    reading is a heuristic, checked by hand on samples.
+    reading is a heuristic, checked by hand on samples. The defaults are the runs without the yes/no instruction
+    (-noyn), the ones that explain; with the instruction the answers are a bare "Yes" / "No".
     python src/analyze_no_bias.py                                   # Qwen 7B vs 3B, method vanilla
-    python src/analyze_no_bias.py --focus qwen2.5-vl-7b --compare qwen2.5-vl-3b
+    python src/analyze_no_bias.py --focus qwen2.5-vl-7b-noyn --compare qwen2.5-vl-3b-noyn
 """
 import argparse
 import json
@@ -243,8 +244,8 @@ def plot(stats, focus, compare, out_path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--method", default="vanilla")
-    ap.add_argument("--focus", default="qwen2.5-vl-7b")
-    ap.add_argument("--compare", default="qwen2.5-vl-3b")
+    ap.add_argument("--focus", default="qwen2.5-vl-7b-noyn")
+    ap.add_argument("--compare", default="qwen2.5-vl-3b-noyn")
     ap.add_argument("--results-dir", type=Path, default=PROJECT / "results" / "mihbench")
     ap.add_argument("--figures-dir", type=Path, default=PROJECT / "figures" / "mihbench")
     args = ap.parse_args()
