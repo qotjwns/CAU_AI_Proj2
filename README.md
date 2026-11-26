@@ -21,7 +21,7 @@ gen/
 │   ├── build_coco_existence.py   COCO 학습 데이터 2단계: 4-Case Counterfactual Group(A/B/C/D) 생성·검증 (--check: 재현성 확인)
 │   ├── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
 │   ├── cf_data.py                학습 공통 데이터: Group 로드·구조 검사, 프롬프트(configs/prompts.yaml), Qwen 배치·라벨
-│   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B; --method sft: 문항 단위 Shuffle, group-sft: Group 단위 배치; 방법마다 배치 구성과 loss만 다름), dev 지표 기록
+│   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B), dev 지표 기록. --method: sft(문항 단위 Shuffle, CE), group-sft(Group 단위 배치, CE), cf-rank(CE + Flip), cf-invariant(CE + Flip + Stay), cf-metric(CE + Align + Uniform, 투영 헤드)
 ├── tests/                        단위 테스트 (python -m unittest discover -s tests)
 ├── data/                         데이터셋
 │   ├── coco/
@@ -48,7 +48,8 @@ gen/
 │   └── <method>/<model>[-<tag>]/ 예: sft/qwen2.5-vl-3b-pilot/
 │       ├── adapter/              LoRA 가중치 (epoch마다 저장)
 │       ├── args.json             학습 설정과 실행 환경
-│       └── log.jsonl             step별 train loss, 학습 전·epoch마다 dev 지표
+│       ├── log.jsonl             step별 train loss와 항별 값(ce, flip, stay, align, uniform), 학습 전·epoch마다 dev 지표
+│       └── projection_head.pt    cf-metric의 투영 헤드 (추론에는 쓰지 않음)
 ├── results/                      평가 결과
 │   └── mihbench/
 │       ├── <method>/<run>/       학습 모델 (src/infer_mihbench.py --adapter runs/<method>/<run>), 예: sft/qwen2.5-vl-3b-pilot/. 채점·그래프: src/eval_mihbench.py --method <method>

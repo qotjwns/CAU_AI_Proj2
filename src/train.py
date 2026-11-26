@@ -1,12 +1,31 @@
 #!/usr/bin/env python3
 """
     LoRA training on the COCO existence four-case groups (src/cf_data.py). Every method uses the same data, model
-    and number of cases per batch (--batch-size); a method sets how batches are made and the loss:
-      sft        Shuffled SFT: the 9,360 cases shuffled one by one, so a batch mixes cases of different groups
-                 and its Yes / No ratio varies; cross-entropy on each case's answer and the <|im_end|> after it
-      group-sft  Grouped SFT: the 2,340 groups shuffled, each batch holds whole groups (A, B, C, D in the same
-                 optimizer step, always half Yes); the same cross-entropy
-    Both draw a new order every epoch. One epoch is 1,170 optimizer steps at --batch-size 8 for either method.
+    and number of cases per batch (--batch-size); a method sets how batches are made and which terms join the
+    cross-entropy (CE on each case's answer "Yes" / "No" and the <|im_end|> after it):
+      method        batches                         loss
+      sft           single cases (Shuffled SFT)     CE
+      group-sft     whole groups (Grouped SFT)      CE
+      cf-rank       whole groups                    CE + lambda_f Flip
+      cf-invariant  whole groups                    CE + lambda_f Flip + lambda_s Stay
+      cf-metric     whole groups                    CE + alpha Align + beta Uniform
+    Single cases: the 9,360 cases shuffled one by one, so a batch mixes cases of different groups and its Yes / No
+    ratio varies. Whole groups: the 2,340 groups shuffled, A, B, C, D of a group in the same batch (always half
+    Yes). A new order every epoch; one epoch is 1,170 optimizer steps at --batch-size 8 for every method.
+    Terms, per group, averaged over the groups of a batch; m = logit(Yes) - logit(No) at the answer position:
+      Flip     1/2 ([gamma - (m_A - m_B)]_+ + [gamma - (m_C - m_D)]_+)       the answer must change across a flip
+      Stay     1/2 ([|m_A - m_C| - eps]_+ + [|m_B - m_D| - eps]_+)           and hold across a stay swap
+      Align    1/2 (||u_A - u_C||^2 + ||u_B - u_D||^2)                       stay pairs close in feature space
+      Uniform  log of the mean of exp(-2 ||u_i - u_j||^2) over the case pairs of the batch and every pair of a
+               batch case with a memory-bank feature (many groups)
+    u = g(h) / ||g(h)||: h is the last hidden state at the answer position (the one whose logits predict Yes / No),
+    g the projection head (Linear H -> H, ReLU, Linear H -> --proj-dim), trained with the LoRA and not used at
+    inference. The memory bank holds the features of the last --bank-size training cases (256), without gradient:
+    a batch of one group (InternVL, --batch-size 4) still spreads against ~64 other groups, and since every model
+    uses the same bank, Uniform does not depend on the batch size (the other terms are per-case or per-group means
+    already). Bank features come from a few steps back; --bank-size 0 uses the batch alone.
+    Weights and margins are placeholders until tuned: --lambda-flip 1, --lambda-stay 1, --gamma 2, --epsilon 0.5,
+    --alpha 1, --beta 1, --proj-dim 128, --bank-size 256.
     Gradient accumulation (fit): --grad-accum batches per optimizer step. When an epoch's batch count does not
     divide evenly, its last step takes the batches left over, each loss scaled by 1 / their number, so an epoch
     always ends with a step and no gradient carries into the next one: ceil(batches / grad_accum) steps per epoch.
@@ -22,15 +41,23 @@
     does, and its language model runs with sdpa instead of the hard-wired eager attention (~10k tokens per case).
       runs/<method>/<model>[-<tag>]/adapter/    LoRA weights (peft), saved after every epoch
       runs/<method>/<model>[-<tag>]/args.json   settings and environment
-      runs/<method>/<model>[-<tag>]/log.jsonl   train loss every --log-every steps, dev metrics before training
-                                                and after every epoch
+      runs/<method>/<model>[-<tag>]/log.jsonl   train loss (and each term) every --log-every steps, dev metrics
+                                                before training and after every epoch
+      runs/cf-metric/<model>[-<tag>]/projection_head.pt   the projection head, saved with the adapter (not needed
+                                                          for inference)
+    MIHBench with the trained adapter (results/mihbench/<method>/<model>[-<tag>]/, then summary and figures):
+    python src/infer_mihbench.py --adapter runs/<method>/<model>[-<tag>]
+    python src/eval_mihbench.py --method <method>
     Dev metrics, from the margin m = logit(Yes) - logit(No) where the answer starts:
       acc        m > 0 exactly on the Yes cases          yes_ratio  share of cases with m > 0
       group_acc  all 4 cases of a group right            flip_rank  m_A > m_B and m_C > m_D, per flip pair
       stay_gap   mean |m_A - m_C| and |m_B - m_D|: 0 when the answer ignores the swapped P image
+      terms      the loss terms on dev, with the run's gamma and epsilon, for every method (so an SFT run shows
+                 them too): ce, flip, stay; cf-metric adds align and uniform (over all dev case pairs, no bank)
     Pilot (468 groups), per model; --method group-sft for Grouped SFT. InternVL (~10k tokens per case) takes
     4 cases per batch and 2 batches per optimizer step, the same 8 cases per step:
     python src/train.py --model qwen2.5-vl-3b --method sft --train pilot_train --tag pilot
+    python src/train.py --model qwen2.5-vl-3b --method cf-invariant --train pilot_train --tag pilot
     python src/train.py --model qwen2.5-vl-7b --method sft --train pilot_train --tag pilot
     python src/train.py --model llava-ov-7b --method sft --train pilot_train --tag pilot
     python src/train.py --model internvl2.5-4b --method sft --train pilot_train --batch-size 4 --grad-accum 2 --tag pilot
@@ -102,9 +129,13 @@ def train_mode(model):
             pass
 
 
-def answer_logits(model, batch, device):
-    """Logits (cases, 2, vocab) at the answer position (predicting Yes / No) and the next one (predicting
-    <|im_end|>), in float32."""
+def lm_head_of(net):
+    return net.language_model.lm_head if hasattr(net, "extract_feature") else net.lm_head  # InternVL, others
+
+
+def answer_outputs(model, batch, device):
+    """(logits (cases, 2, vocab) in float32 at the answer position (predicting Yes / No) and the next one
+    (predicting <|im_end|>), last hidden state (cases, H) at the answer position)."""
     net = model.get_base_model()
     if hasattr(net, "extract_feature"):  # InternVL: tile features into the <IMG_CONTEXT> embeddings
         lm, ids = net.language_model, batch["input_ids"].to(device)
@@ -113,15 +144,18 @@ def answer_logits(model, batch, device):
         emb = emb.masked_scatter((ids == net.img_context_token_id).unsqueeze(-1).expand_as(emb), vit.to(emb.dtype))
         h = lm.model(inputs_embeds=emb, attention_mask=batch["attention_mask"].to(device),
                      use_cache=False).last_hidden_state
-        head = lm.lm_head
     else:  # Qwen2.5-VL, LLaVA-OV: the processor's outputs are the inputs
         inputs = {k: v.to(device, net.dtype) if v.is_floating_point() else v.to(device)
                   for k, v in batch.items() if k not in NOT_INPUTS}
         h = net.model(**inputs, use_cache=False).last_hidden_state
-        head = net.lm_head
     rows = torch.arange(h.shape[0], device=h.device)
     idx = batch["answer_index"].to(h.device)
-    return head(torch.stack([h[rows, idx], h[rows, idx + 1]], 1)).float()
+    at = torch.stack([h[rows, idx], h[rows, idx + 1]], 1)
+    return lm_head_of(net)(at).float(), at[:, 0]
+
+
+def answer_logits(model, batch, device):
+    return answer_outputs(model, batch, device)[0]
 
 
 def sft_loss(logits, batch):
@@ -130,10 +164,80 @@ def sft_loss(logits, batch):
     return F.cross_entropy(logits.flatten(0, 1), targets.flatten())
 
 
-METHODS = {  # name -> (batches of single cases or of whole groups, loss)
-    "sft": ("case", sft_loss),
-    "group-sft": ("group", sft_loss),
+METHODS = {  # name -> (batches of single cases or of whole groups, terms added to CE)
+    "sft": ("case", ()),
+    "group-sft": ("group", ()),
+    "cf-rank": ("group", ("flip",)),
+    "cf-invariant": ("group", ("flip", "stay")),
+    "cf-metric": ("group", ("align", "uniform")),
 }
+
+
+def flip_term(m, gamma):
+    """m: margins, groups x cases A, B, C, D."""
+    return torch.stack([F.relu(gamma - (m[:, i] - m[:, j])) for i, j in FLIP_PAIRS]).mean()
+
+
+def stay_term(m, epsilon):
+    return torch.stack([F.relu((m[:, i] - m[:, j]).abs() - epsilon) for i, j in STAY_PAIRS]).mean()
+
+
+def align_term(u):
+    """u: unit features, cases in order A, B, C, D per group."""
+    g = u.view(-1, 4, u.shape[-1])
+    return torch.stack([(g[:, i] - g[:, j]).pow(2).sum(-1) for i, j in STAY_PAIRS]).mean()
+
+
+def uniform_term(u, bank=None):
+    """log of the mean of exp(-2 ||a - b||^2) over the pairs i < j of u and every pair of a row of u with a row of
+    bank (no gradient through bank). ||a - b||^2 = 2 - 2 a.b for unit vectors: no sqrt, so no NaN at a = b."""
+    i, j = torch.triu_indices(len(u), len(u), 1, device=u.device)
+    d2 = 2 - 2 * (u[i] * u[j]).sum(-1)
+    if bank is not None and len(bank):
+        d2 = torch.cat([d2, (2 - 2 * u @ bank.T).flatten()])
+    d2 = d2.clamp_min(0)
+    return torch.logsumexp(-2 * d2, 0) - math.log(len(d2))
+
+
+class Objective(torch.nn.Module):
+    """CE plus the method's terms (module docstring). forward(logits, hidden, batch) -> (loss, {term: value});
+    its parameters (the projection head, cf-metric only) train with the LoRA. Every training forward pushes its
+    features into the memory bank (newest first, at most bank_size)."""
+
+    def __init__(self, terms, collate, net, args):
+        super().__init__()
+        self.terms, self.yes_id, self.no_id = terms, collate.yes_id, collate.no_id
+        self.weights = {"flip": args.lambda_flip, "stay": args.lambda_stay, "align": args.alpha, "uniform": args.beta}
+        self.gamma, self.epsilon, self.bank_size = args.gamma, args.epsilon, args.bank_size
+        self.head = None
+        if {"align", "uniform"} & set(terms):
+            h = lm_head_of(net).in_features
+            self.head = torch.nn.Sequential(torch.nn.Linear(h, h), torch.nn.ReLU(), torch.nn.Linear(h, args.proj_dim))
+        self.register_buffer("bank", torch.zeros(0, args.proj_dim), persistent=False)
+
+    def margins(self, logits):
+        return (logits[:, 0, self.yes_id] - logits[:, 0, self.no_id]).view(-1, 4)  # groups x A, B, C, D
+
+    def features(self, hidden):
+        return F.normalize(self.head(hidden.float()), dim=-1)
+
+    def forward(self, logits, hidden, batch):
+        parts = {"ce": sft_loss(logits, batch)}
+        if self.terms:
+            target = batch["target"].view(-1, 4)
+            if not (target == target.new_tensor([1, 0, 1, 0])).all():
+                raise ValueError("these terms need whole groups, cases in order A, B, C, D")
+        if "flip" in self.terms:
+            parts["flip"] = flip_term(self.margins(logits), self.gamma)
+        if "stay" in self.terms:
+            parts["stay"] = stay_term(self.margins(logits), self.epsilon)
+        if self.head is not None:
+            u = self.features(hidden)
+            parts["align"] = align_term(u)
+            parts["uniform"] = uniform_term(u, self.bank)
+            self.bank = torch.cat([u.detach(), self.bank])[:self.bank_size]
+        loss = parts["ce"] + sum(self.weights[k] * parts[k] for k in self.terms)
+        return loss, {k: v.item() for k, v in parts.items()}
 
 
 def items_per_batch(batching, batch_size):
@@ -190,22 +294,31 @@ def fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum, on_step=
 
 
 @torch.no_grad()
-def evaluate(model, loader, collate, device):
+def evaluate(model, loader, collate, device, objective):
+    """Dev metrics and the loss terms on dev (module docstring); the memory bank is neither read nor filled."""
     model.eval()
-    margins, losses = [], []
+    margins, losses, feats = [], [], []
     for batch in tqdm(loader, desc="dev", leave=False):
-        logits = answer_logits(model, batch, device)
+        logits, hidden = answer_outputs(model, batch, device)
         margins.append((logits[:, 0, collate.yes_id] - logits[:, 0, collate.no_id]).cpu())
         losses.append(sft_loss(logits, batch).item())
+        if objective.head is not None:
+            feats.append(objective.features(hidden).cpu())
     train_mode(model)
     m = torch.cat(margins).view(-1, 4)  # groups x cases A, B, C, D
     right = (m > 0) == torch.tensor([True, False, True, False])
-    return {"groups": len(m), "ce": round(sum(losses) / len(losses), 4),
+    terms = {"ce": sum(losses) / len(losses), "flip": flip_term(m, objective.gamma).item(),
+             "stay": stay_term(m, objective.epsilon).item()}
+    if feats:
+        u = torch.cat(feats)
+        terms.update(align=align_term(u).item(), uniform=uniform_term(u).item())
+    return {"groups": len(m),
             "acc": round(right.float().mean().item(), 4),
             "yes_ratio": round((m > 0).float().mean().item(), 4),
             "group_acc": round(right.all(1).float().mean().item(), 4),
             "flip_rank": round(torch.stack([m[:, i] > m[:, j] for i, j in FLIP_PAIRS]).float().mean().item(), 4),
-            "stay_gap": round(torch.stack([(m[:, i] - m[:, j]).abs() for i, j in STAY_PAIRS]).mean().item(), 3)}
+            "stay_gap": round(torch.stack([(m[:, i] - m[:, j]).abs() for i, j in STAY_PAIRS]).mean().item(), 3),
+            "terms": {k: round(v, 4) for k, v in terms.items()}}
 
 
 def environment(model_dir, device, template):
@@ -235,10 +348,20 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", help="appended to the run folder name")
+    terms = ap.add_argument_group("loss terms (placeholders until tuned)")
+    terms.add_argument("--lambda-flip", type=float, default=1.0, help="weight of Flip (cf-rank, cf-invariant)")
+    terms.add_argument("--lambda-stay", type=float, default=1.0, help="weight of Stay (cf-invariant)")
+    terms.add_argument("--gamma", type=float, default=2.0, help="Flip margin, in logit units")
+    terms.add_argument("--epsilon", type=float, default=0.5, help="Stay tolerance, in logit units")
+    terms.add_argument("--alpha", type=float, default=1.0, help="weight of Align (cf-metric)")
+    terms.add_argument("--beta", type=float, default=1.0, help="weight of Uniform (cf-metric)")
+    terms.add_argument("--proj-dim", type=int, default=128, help="projection head output size (cf-metric)")
+    terms.add_argument("--bank-size", type=int, default=256,
+                       help="training features kept for Uniform (cf-metric); 0: the batch alone")
     args = ap.parse_args()
     if args.batch_size % 4:
-        ap.error("--batch-size must be a multiple of 4, so both methods can use the same batch size")
-    batching, loss_fn = METHODS[args.method]
+        ap.error("--batch-size must be a multiple of 4, so every method can use the same batch size")
+    batching, loss_terms = METHODS[args.method]
 
     from peft import LoraConfig, get_peft_model
     random.seed(args.seed)
@@ -252,7 +375,8 @@ def main():
     model.to(device)
     lm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, target_modules=LORA_TARGETS))
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    objective = Objective(loss_terms, collate, model.get_base_model(), args).to(device)
+    trainable = sum(p.numel() for p in [*model.parameters(), *objective.parameters()] if p.requires_grad)
 
     # sft: items are cases; group-sft: items are groups of 4 cases. Dev is always read by group (group metrics).
     train = CaseDataset(args.train) if batching == "case" else GroupDataset(args.train)
@@ -265,10 +389,11 @@ def main():
     dev_loader = DataLoader(dev, batch_size=items_per_batch("group", args.batch_size), shuffle=False, **loader_kw)
     steps = planned_steps(len(train_loader), args.grad_accum, args.epochs, args.max_steps)
 
-    params = [p for p in model.parameters() if p.requires_grad]
+    params = [p for p in [*model.parameters(), *objective.parameters()] if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
     sched = get_cosine_schedule_with_warmup(opt, round(args.warmup * steps), steps)
-    info = {**vars(args), "batching": batching, "train_items": len(train), "dev_groups": len(dev), "steps": steps,
+    info = {**vars(args), "batching": batching, "loss": ["ce", *loss_terms], "train_items": len(train),
+            "dev_groups": len(dev), "steps": steps,
             "trainable_params": trainable, "lora": {"r": 16, "alpha": 32, "dropout": 0.05, "targets": LORA_TARGETS},
             **environment(model_dir, device, collate.template)}
     (run_dir / "args.json").write_text(json.dumps(info, indent=2) + "\n")
@@ -280,36 +405,46 @@ def main():
         log.write(json.dumps(rec) + "\n")
         log.flush()
 
-    dev_metrics = evaluate(model, dev_loader, collate, device)
+    dev_metrics = evaluate(model, dev_loader, collate, device, objective)
     write({"step": 0, "epoch": 0, "dev": dev_metrics})
     print(f"dev before training: {dev_metrics}")
 
     train_mode(model)
-    window = []
+    objective.train()
+    window, part_window = [], []
     bar = tqdm(total=steps, desc=args.method)
+
+    def loss_of(batch):
+        loss, parts = objective(*answer_outputs(model, batch, device), batch)
+        part_window.append(parts)
+        return loss
 
     def on_step(step, epoch, loss, grad_norm):
         window.append(loss)
         bar.update()
         bar.set_postfix(loss=f"{sum(window) / len(window):.4f}")
         if step % args.log_every == 0 or step == steps:
-            write({"step": step, "epoch": epoch, "loss": round(sum(window) / len(window), 5),
+            parts = {k: round(sum(p[k] for p in part_window) / len(part_window), 5) for k in part_window[0]}
+            write({"step": step, "epoch": epoch, "loss": round(sum(window) / len(window), 5), "terms": parts,
                    "grad_norm": round(grad_norm, 4), "lr": sched.get_last_lr()[0]})
             window.clear()
+            part_window.clear()
 
     def on_epoch(step, epoch):
         model.save_pretrained(run_dir / "adapter")
-        dev_metrics = evaluate(model, dev_loader, collate, device)
+        if objective.head is not None:
+            torch.save(objective.head.state_dict(), run_dir / "projection_head.pt")
+        dev_metrics = evaluate(model, dev_loader, collate, device, objective)
         write({"step": step, "epoch": epoch, "dev": dev_metrics})
         print(f"\ndev after epoch {epoch}: {dev_metrics}")
 
-    taken = fit(params, opt, sched, train_loader, lambda batch: loss_fn(answer_logits(model, batch, device), batch),
-                args.epochs, steps, args.grad_accum, on_step, on_epoch)
+    taken = fit(params, opt, sched, train_loader, loss_of, args.epochs, steps, args.grad_accum, on_step, on_epoch)
     bar.close()
     log.close()
     if taken != steps or sched.last_epoch != steps:
         raise RuntimeError(f"took {taken} optimizer steps and {sched.last_epoch} scheduler steps, planned {steps}")
-    print(f"\n{run_dir / 'adapter'}")
+    print(f"\n{run_dir / 'adapter'}\nMIHBench: python src/infer_mihbench.py --adapter {run_dir.relative_to(PROJECT)}"
+          f"\n          python src/eval_mihbench.py --method {args.method}")
 
 
 if __name__ == "__main__":

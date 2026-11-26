@@ -157,6 +157,18 @@ class Tiny(torch.nn.Module):
         return self
 
 
+class TinyObjective(torch.nn.Module):
+    """Stands in for train.Objective: the mean square of the tiny model's output, no extra parameters."""
+    head = None
+
+    def __init__(self, *args):
+        super().__init__()
+
+    def forward(self, logits, hidden, batch):
+        loss = logits.pow(2).mean()
+        return loss, {"ce": loss.item()}
+
+
 class TinyCollate:
     template, yes_id, no_id = "{question}", 0, 1
 
@@ -177,10 +189,9 @@ class Main(unittest.TestCase):
                 "--workers", "0", "--log-every", "1", "--tag", "test"]
         with mock.patch.multiple(train, PROJECT=Path(tmp), pick_device=lambda: "cpu",
                                  load_model=lambda name, model_dir: (Tiny(), Tiny(), TinyCollate()),
-                                 answer_logits=lambda model, batch, device: model(batch["x"]),
-                                 evaluate=lambda *a: {"acc": 0.0},
-                                 METHODS={m: (b, lambda logits, batch: logits.pow(2).mean())
-                                          for m, (b, _) in train.METHODS.items()}), \
+                                 answer_outputs=lambda model, batch, device: (model(batch["x"]), None),
+                                 evaluate=lambda model, loader, collate, device, objective: {"acc": 0.0},
+                                 Objective=TinyObjective), \
                 mock.patch.dict(sys.modules, {"peft": fake_peft}), mock.patch.object(sys, "argv", argv), \
                 mock.patch("sys.stdout"), mock.patch("sys.stderr"):
             train.main()
