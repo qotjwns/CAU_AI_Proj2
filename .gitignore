@@ -4,8 +4,9 @@ data/
 # Model checkpoints (downloaded by scripts/download_models.py)
 models/
 
-# Evaluation results (written by src/infer_mihbench.py)
+# Evaluation results (written by src/infer_mihbench.py) and figures made from them (src/eval_mihbench.py)
 results/
+figures/
 
 # Python
 __pycache__/
