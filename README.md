@@ -21,7 +21,7 @@ gen/
 │   ├── build_coco_existence.py   COCO 학습 데이터 2단계: 4-Case Counterfactual Group(A/B/C/D) 생성·검증 (--check: 재현성 확인)
 │   ├── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
 │   ├── cf_data.py                학습 공통 데이터: Group 로드·구조 검사, 프롬프트(configs/prompts.yaml), Qwen 배치·라벨
-│   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B; --method sft; 방법끼리 데이터·배치는 같고 loss만 다름), dev 지표 기록
+│   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B; --method sft: 문항 단위 Shuffle, group-sft: Group 단위 배치; 방법마다 배치 구성과 loss만 다름), dev 지표 기록
 ├── data/                         데이터셋
 │   ├── coco/
 │   │   ├── annotations/

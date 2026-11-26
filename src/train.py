@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-    LoRA training on the COCO existence four-case groups (src/cf_data.py). Every method uses the same data,
-    batches and model; only the loss differs. Implemented so far:
-      sft   cross-entropy on each case's answer ("Yes" / "No") and the <|im_end|> after it
+    LoRA training on the COCO existence four-case groups (src/cf_data.py). Every method uses the same data, model
+    and number of cases per batch (--batch-size); a method sets how batches are made and the loss:
+      sft        Shuffled SFT: the 9,360 cases shuffled one by one, so a batch mixes cases of different groups
+                 and its Yes / No ratio varies; cross-entropy on each case's answer and the <|im_end|> after it
+      group-sft  Grouped SFT: the 2,340 groups shuffled, each batch holds whole groups (A, B, C, D in the same
+                 optimizer step, always half Yes); the same cross-entropy
+    Both draw a new order every epoch. One epoch is 1,170 optimizer steps at --batch-size 8 for either method.
     Prompt: the 3 images, then the model family's prompt from configs/prompts.yaml filled with
     "Is there a/an <class> in all 3 images?", built as in its MIHBench inference (src/cf_data.py has one collator
     per model family).
-    Batches hold whole groups (--groups-per-step groups = 4x cases), in a new order every epoch.
     LoRA (r 16, alpha 32, dropout 0.05) on the language model's attention and MLP projections; the vision encoder
     and the projector stay frozen (and in eval mode). bf16 weights for every model (LLaVA-OV runs in fp16 at
     inference; fp16 training without loss scaling is unstable), gradient checkpointing on the language model.
@@ -21,12 +24,13 @@
       acc        m > 0 exactly on the Yes cases          yes_ratio  share of cases with m > 0
       group_acc  all 4 cases of a group right            flip_rank  m_A > m_B and m_C > m_D, per flip pair
       stay_gap   mean |m_A - m_C| and |m_B - m_D|: 0 when the answer ignores the swapped P image
-    Pilot (468 groups), per model; InternVL takes 1 group per batch and 2 batches per step (the same 8 cases):
-    python src/train.py --model qwen2.5-vl-3b --train pilot_train --tag pilot
-    python src/train.py --model qwen2.5-vl-7b --train pilot_train --tag pilot
-    python src/train.py --model llava-ov-7b --train pilot_train --tag pilot
-    python src/train.py --model internvl2.5-4b --train pilot_train --groups-per-step 1 --grad-accum 2 --tag pilot
-    python src/train.py --model qwen2.5-vl-3b --max-steps 2 --eval-groups 2 --tag smoke  # quick check
+    Pilot (468 groups), per model; --method group-sft for Grouped SFT. InternVL (~10k tokens per case) takes
+    4 cases per batch and 2 batches per optimizer step, the same 8 cases per step:
+    python src/train.py --model qwen2.5-vl-3b --method sft --train pilot_train --tag pilot
+    python src/train.py --model qwen2.5-vl-7b --method sft --train pilot_train --tag pilot
+    python src/train.py --model llava-ov-7b --method sft --train pilot_train --tag pilot
+    python src/train.py --model internvl2.5-4b --method sft --train pilot_train --batch-size 4 --grad-accum 2 --tag pilot
+    python src/train.py --model qwen2.5-vl-3b --method sft --max-steps 2 --eval-groups 2 --tag smoke  # quick check
     Full training: --train train (the default) instead of --train pilot_train.
 """
 import argparse
@@ -45,7 +49,8 @@ from tqdm import tqdm
 from transformers import (AutoModel, AutoProcessor, AutoTokenizer, LlavaOnevisionForConditionalGeneration,
                           Qwen2_5_VLForConditionalGeneration, get_cosine_schedule_with_warmup)
 
-from cf_data import FLIP_PAIRS, STAY_PAIRS, GroupDataset, InternVLCollator, LlavaOVCollator, QwenCollator
+from cf_data import (FLIP_PAIRS, STAY_PAIRS, CaseDataset, GroupDataset, InternVLCollator, LlavaOVCollator,
+                     QwenCollator)
 from infer_mihbench import MODELS, pick_device
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -120,7 +125,10 @@ def sft_loss(logits, batch):
     return F.cross_entropy(logits.flatten(0, 1), targets.flatten())
 
 
-LOSSES = {"sft": sft_loss}
+METHODS = {  # name -> (batches of single cases or of whole groups, loss)
+    "sft": ("case", sft_loss),
+    "group-sft": ("group", sft_loss),
+}
 
 
 @torch.no_grad()
@@ -155,11 +163,12 @@ def environment(model_dir, device, template):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, choices=MODELS)
-    ap.add_argument("--method", default="sft", choices=LOSSES)
+    ap.add_argument("--method", required=True, choices=METHODS)
     ap.add_argument("--train", default="train", choices=["train", "pilot_train"])
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-steps", type=int, help="stop after this many optimizer steps")
-    ap.add_argument("--groups-per-step", type=int, default=2, help="groups per batch (4 cases each)")
+    ap.add_argument("--batch-size", type=int, default=8,
+                    help="cases per batch, the same for every method (a multiple of 4: group methods take whole groups)")
     ap.add_argument("--grad-accum", type=int, default=1, help="batches per optimizer step")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--warmup", type=float, default=0.03, help="share of the steps")
@@ -169,6 +178,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", help="appended to the run folder name")
     args = ap.parse_args()
+    if args.batch_size % 4:
+        ap.error("--batch-size must be a multiple of 4, so both methods can use the same batch size")
+    batching, loss_fn = METHODS[args.method]
 
     from peft import LoraConfig, get_peft_model
     random.seed(args.seed)
@@ -184,14 +196,15 @@ def main():
     model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, target_modules=LORA_TARGETS))
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    train = GroupDataset(args.train)
+    # sft: items are cases; group-sft: items are groups of 4 cases. Dev is always read by group (group metrics).
+    train = CaseDataset(args.train) if batching == "case" else GroupDataset(args.train)
     dev = GroupDataset("dev")
     if args.eval_groups:
         dev = Subset(dev, sorted(random.Random(args.seed).sample(range(len(dev)), args.eval_groups)))
-    loader_kw = {"batch_size": args.groups_per_step, "collate_fn": collate, "num_workers": args.workers,
-                 "persistent_workers": args.workers > 0}
-    train_loader = DataLoader(train, shuffle=True, generator=torch.Generator().manual_seed(args.seed), **loader_kw)
-    dev_loader = DataLoader(dev, shuffle=False, **loader_kw)
+    loader_kw = {"collate_fn": collate, "num_workers": args.workers, "persistent_workers": args.workers > 0}
+    train_loader = DataLoader(train, batch_size=args.batch_size // (1 if batching == "case" else 4), shuffle=True,
+                              generator=torch.Generator().manual_seed(args.seed), **loader_kw)
+    dev_loader = DataLoader(dev, batch_size=args.batch_size // 4, shuffle=False, **loader_kw)
     steps = args.epochs * len(train_loader) // args.grad_accum
     if args.max_steps:
         steps = min(steps, args.max_steps)
@@ -199,11 +212,11 @@ def main():
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
     sched = get_cosine_schedule_with_warmup(opt, round(args.warmup * steps), steps)
-    info = {**vars(args), "train_groups": len(train), "dev_groups": len(dev), "steps": steps,
+    info = {**vars(args), "batching": batching, "train_items": len(train), "dev_groups": len(dev), "steps": steps,
             "trainable_params": trainable, "lora": {"r": 16, "alpha": 32, "dropout": 0.05, "targets": LORA_TARGETS},
             **environment(model_dir, device, collate.template)}
     (run_dir / "args.json").write_text(json.dumps(info, indent=2) + "\n")
-    print(f"{run_dir.relative_to(PROJECT)}: {len(train)} train groups, {steps} steps, "
+    print(f"{run_dir.relative_to(PROJECT)}: {len(train)} train {batching}s, {steps} steps, "
           f"{trainable / 1e6:.1f}M trainable parameters, {device}")
 
     log = open(run_dir / "log.jsonl", "w")
@@ -220,7 +233,7 @@ def main():
     bar = tqdm(total=steps, desc=args.method)
     for epoch in range(1, args.epochs + 1):
         for i, batch in enumerate(train_loader):
-            loss = LOSSES[args.method](answer_logits(model, batch, device), batch)
+            loss = loss_fn(answer_logits(model, batch, device), batch)
             (loss / args.grad_accum).backward()
             window.append(loss.item())
             if (i + 1) % args.grad_accum:
