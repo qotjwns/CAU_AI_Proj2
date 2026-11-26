@@ -2,7 +2,8 @@
 """
     Download COCO train2014 to data/coco/
       annotations/instances_train2014.json   object labels (from annotations_trainval2014.zip, 253 MB)
-      train2014/                             82,783 images (from train2014.zip, 13.5 GB)
+      annotations/instances_val2014.json     object labels of val2014 (MIHBench images), same zip
+      train2014/                            82,783 images (from train2014.zip, 13.5 GB)
     python scripts/download_coco_train2014.py  # annotations first, then images; zips are deleted after extracting
 """
 import argparse
@@ -22,7 +23,7 @@ HOSTS = [
     "http://images.cocodataset.org",
 ]
 ANN_ZIP, ANN_BYTES = "annotations/annotations_trainval2014.zip", 252_872_794  
-ANN_FILES = ["annotations/instances_train2014.json"] 
+ANN_FILES = ["annotations/instances_train2014.json", "annotations/instances_val2014.json"]
 IMG_ZIP, IMG_BYTES = "zips/train2014.zip", 13_510_573_713
 NAME, N_IMAGES = "train2014", 82_783
 CHUNK = 8 << 20
