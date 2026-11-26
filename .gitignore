@@ -1,0 +1,35 @@
+# Datasets (downloaded by scripts/, e.g. data/coco/)
+data/
+
+# Model checkpoints (downloaded by scripts/download_models.py)
+models/
+
+# Evaluation results (written by src/infer_mihbench.py)
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Training outputs
+checkpoints/
+outputs/
+runs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets
+.env
