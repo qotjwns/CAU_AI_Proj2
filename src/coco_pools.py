@@ -9,8 +9,8 @@
                 seen with it in >= 30 images and with lift > 1, never a class found in > 25% of images (person,
                 55%: "has a person" says nothing). A class with none (bear) uses the other classes of its
                 supercategory instead.
-    Need per class (30/6/12 triplets, half positive-anchor (4 P + 1 N), half negative-anchor (3 P + 2 N)):
-      P slots train 105, dev 21, test 42 -> 168 images without reuse, 98 if train images are used up to 3 times
+    Need per class (30/6/12 four-case groups, each 4 P + 1 N images):
+      P slots train 120, dev 24, test 48 -> 192 images without reuse, 112 if train images are used up to 3 times
     hair drier and toaster fall short and are left out of training (EXCLUDED_CLASSES): 78 classes remain.
     Counts are per class, before images are split globally, so they are upper bounds.
       data/coco_existence/pool_stats.json   counts, companions, shortfalls, MIHBench leakage and object sizes
@@ -34,7 +34,7 @@ HARD_TOP_K = 3
 EXCLUDED_CLASSES = ("hair drier", "toaster")  # P short even with train reuse (pool_stats 2026-11-26)
 TRIPLETS = {"train": 30, "dev": 6, "test": 12}
 TRAIN_REUSE = 3
-PER_TRIPLET = {"P": 3.5, "N": 1.5}  # mean of positive-anchor (4 P, 1 N) and negative-anchor (3 P, 2 N)
+PER_GROUP = {"P": 4, "N": 1}  # a four-case group holds 4 P images and 1 N image
 MIH_COCO = re.compile(r"COCO_val2014_(\d{12})\.jpg")
 MIH_QUESTION = re.compile(r"Is there an? (.+?) in (?:the imange\? in )?all \d+ images\?")  # 86 have the typo
 
@@ -90,7 +90,7 @@ def build_pools(classes, present, comp):
 
 def need(kind):
     """Slots per split, the minimum number of distinct images (train reuse allowed) and the no-reuse number."""
-    slots = {s: math.ceil(n * PER_TRIPLET[kind]) for s, n in TRIPLETS.items()}
+    slots = {s: math.ceil(n * PER_GROUP[kind]) for s, n in TRIPLETS.items()}
     return {**slots, "min": slots["dev"] + slots["test"] + math.ceil(slots["train"] / TRAIN_REUSE),
             "no_reuse": sum(slots.values())}
 
@@ -178,7 +178,7 @@ def main():
     stats = {
         "params": {"min_area": MIN_AREA, "min_cooccurrence_images": MIN_COOC,
                    "max_companion_share": MAX_COMPANION_SHARE, "hard_top_k": HARD_TOP_K,
-                   "triplets_per_class": TRIPLETS, "train_reuse": TRAIN_REUSE},
+                   "groups_per_class": TRIPLETS, "train_reuse": TRAIN_REUSE},
         "need": {"P": need_p, "N": need_n, "hard_N_min": need_hard},
         "classes_used": len(used),
         "excluded_classes": [{"name": x["name"], "P": x["P"], "P_short_by": x["P_short_by"]}
