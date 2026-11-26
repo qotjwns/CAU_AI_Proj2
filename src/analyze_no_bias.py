@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 
 from coco_pools import COCO, MIH_COCO, MIH_QUESTION, load_coco
 from eval_mihbench import AXIS, GRID, INK, INK_2, SURFACE, assign_colors, display_name, load, rounded_bar
+from mihbench import parse_yes_no
 
 PROJECT = Path(__file__).resolve().parents[1]
 QUESTIONS = PROJECT / "data" / "mihbench" / "questions"
@@ -106,6 +107,8 @@ def analyze(data, coco):
         answers = {(t, a["question_id"]): a for t in TASKS for a in tasks.get(t, [])}
         if len(answers) != 800 * len(TASKS):
             continue
+        for a in answers.values():  # the official rule, as src/eval_mihbench.py (DAB outputs carry no "pred")
+            a["pred"] = parse_yes_no(a["text"])
         yes_q = [k for k, a in answers.items() if a["label"] == "yes"]
         agree = [k for k in yes_q if all(x is not None for x in coco[k][1])]
         disagree = [k for k in yes_q if any(x is None for x in coco[k][1])]
