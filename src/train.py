@@ -1,61 +1,30 @@
 #!/usr/bin/env python3
 """
-    LoRA training on the COCO existence four-case groups (src/cf_data.py). Every method uses the same data, model
-    and number of cases per batch (--batch-size); a method sets how batches are made and which terms join the
-    cross-entropy (CE on each case's answer "Yes" / "No" and the <|im_end|> after it):
-      method        batches                         loss
-      sft           single cases (Shuffled SFT)     CE
-      group-sft     whole groups (Grouped SFT)      CE
-      cf-rank       whole groups                    CE + lambda_f Flip
-      cf-invariant  whole groups                    CE + lambda_f Flip + lambda_s Stay
-      cf-metric     whole groups                    CE + alpha Align + beta Uniform
-    Single cases: the 9,360 cases shuffled one by one, so a batch mixes cases of different groups and its Yes / No
-    ratio varies. Whole groups: the 2,340 groups shuffled, A, B, C, D of a group in the same batch (always half
-    Yes). A new order every epoch; one epoch is 1,170 optimizer steps at --batch-size 8 for every method.
-    Terms, per group, averaged over the groups of a batch; m = logit(Yes) - logit(No) at the answer position:
-      Flip     1/2 ([gamma - (m_A - m_B)]_+ + [gamma - (m_C - m_D)]_+)       the answer must change across a flip
-      Stay     1/2 ([|m_A - m_C| - eps]_+ + [|m_B - m_D| - eps]_+)           and hold across a stay swap
-      Align    1/2 (||u_A - u_C||^2 + ||u_B - u_D||^2)                       stay pairs close in feature space
-      Uniform  log of the mean of exp(-2 ||u_i - u_j||^2) over the case pairs of the batch and every pair of a
-               batch case with a memory-bank feature (many groups)
-    u = g(h) / ||g(h)||: h is the last hidden state at the answer position (the one whose logits predict Yes / No),
-    g the projection head (Linear H -> H, ReLU, Linear H -> --proj-dim), trained with the LoRA and not used at
-    inference. The memory bank holds the features of the last --bank-size training cases (256), without gradient:
-    a batch of one group (InternVL, --batch-size 4) still spreads against ~64 other groups, and since every model
-    uses the same bank, Uniform does not depend on the batch size (the other terms are per-case or per-group means
-    already). Bank features come from a few steps back; --bank-size 0 uses the batch alone.
-    Weights and margins are placeholders until tuned: --lambda-flip 1, --lambda-stay 1, --gamma 2, --epsilon 0.5,
-    --alpha 1, --beta 1, --proj-dim 128, --bank-size 256.
-    Gradient accumulation (fit): --grad-accum batches per optimizer step. When an epoch's batch count does not
-    divide evenly, its last step takes the batches left over, each loss scaled by 1 / their number, so an epoch
-    always ends with a step and no gradient carries into the next one: ceil(batches / grad_accum) steps per epoch.
-    The scheduler is planned for exactly the steps taken, and the run stops with an error if they differ.
+    LoRA training on the COCO existence four-case groups (src/cf_data.py): reads the options, puts the pieces
+    together and records the run. The pieces:
+      src/objectives.py  the methods (sft, group-sft, cf-rank, cf-invariant, cf-metric) and their loss terms
+      src/runner.py      the optimizer loop (gradient accumulation) and the dev loop
+      src/vlm.py         per model family: loading, LoRA targets, the forward pass to the answer position
+      src/metrics.py     dev metrics from the answer margin
+      src/runinfo.py     device, model commit and versions, recorded in args.json
+    Every method uses the same data, model and number of cases per batch (--batch-size); one epoch is 1,170
+    optimizer steps at --batch-size 8 for every method. The scheduler is planned for exactly the steps taken
+    (runner.planned_steps), and the run stops with an error if they differ.
     Prompt: the 3 images, then the model family's prompt from configs/prompts.yaml filled with
-    "Is there a/an <class> in all 3 images?", built as in its MIHBench inference (src/cf_data.py has one collator
-    per model family).
-    LoRA (r 16, alpha 32, dropout 0.05) on the language model's attention and MLP projections; the vision encoder
-    and the projector stay frozen (and in eval mode). bf16 weights for every model (LLaVA-OV runs in fp16 at
-    inference; fp16 training without loss scaling is unstable), gradient checkpointing on the language model.
-    Only the hidden states at the answer position and the one after it go through lm_head.
-    InternVL is remote code: its <IMG_CONTEXT> embeddings are replaced by the tile features here, as its generate()
-    does, and its language model runs with sdpa instead of the hard-wired eager attention (~10k tokens per case).
+    "Is there a/an <class> in all 3 images?", built as in its MIHBench inference.
+    Loss weights and margins are placeholders until tuned: --lambda-flip 1, --lambda-stay 1, --gamma 2,
+    --epsilon 0.5, --alpha 1, --beta 1, --proj-dim 128, --bank-size 256.
       runs/<method>/<model>[-<tag>]/adapter/    LoRA weights (peft), saved after every epoch
       runs/<method>/<model>[-<tag>]/args.json   settings and environment
       runs/<method>/<model>[-<tag>]/log.jsonl   train loss (and each term) every --log-every steps, dev metrics
-                                                before training and after every epoch
+                                                (src/metrics.py) and dev terms before training and after every epoch
       runs/cf-metric/<model>[-<tag>]/projection_head.pt   the projection head, saved with the adapter (not needed
                                                           for inference)
     MIHBench with the trained adapter (results/mihbench/<method>/<model>[-<tag>]/, then summary and figures):
     python src/infer_mihbench.py --adapter runs/<method>/<model>[-<tag>]
     python src/eval_mihbench.py --method <method>
-    Dev metrics, from the margin m = logit(Yes) - logit(No) where the answer starts:
-      acc        m > 0 exactly on the Yes cases          yes_ratio  share of cases with m > 0
-      group_acc  all 4 cases of a group right            flip_rank  m_A > m_B and m_C > m_D, per flip pair
-      stay_gap   mean |m_A - m_C| and |m_B - m_D|: 0 when the answer ignores the swapped P image
-      terms      the loss terms on dev, with the run's gamma and epsilon, for every method (so an SFT run shows
-                 them too): ce, flip, stay; cf-metric adds align and uniform (over all dev case pairs, no bank)
-    Pilot (468 groups), per model; --method group-sft for Grouped SFT. InternVL (~10k tokens per case) takes
-    4 cases per batch and 2 batches per optimizer step, the same 8 cases per step:
+    Pilot (468 groups), per model. InternVL (~10k tokens per case) takes 4 cases per batch and 2 batches per
+    optimizer step, the same 8 cases per step:
     python src/train.py --model qwen2.5-vl-3b --method sft --train pilot_train --tag pilot
     python src/train.py --model qwen2.5-vl-3b --method cf-invariant --train pilot_train --tag pilot
     python src/train.py --model qwen2.5-vl-7b --method sft --train pilot_train --tag pilot
@@ -65,270 +34,23 @@
     Full training: --train train (the default) instead of --train pilot_train.
 """
 import argparse
-import datetime
 import json
-import math
-import platform
 import random
-import sys
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
-import transformers
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from transformers import (AutoModel, AutoProcessor, AutoTokenizer, LlavaOnevisionForConditionalGeneration,
-                          Qwen2_5_VLForConditionalGeneration, get_cosine_schedule_with_warmup)
+from transformers import get_cosine_schedule_with_warmup
 
-from cf_data import (FLIP_PAIRS, STAY_PAIRS, CaseDataset, GroupDataset, InternVLCollator, LlavaOVCollator,
-                     QwenCollator)
-from infer_mihbench import MODELS, pick_device
+from cf_data import CaseDataset, GroupDataset
+from infer_mihbench import MODELS
+from objectives import METHODS, Objective
+from runinfo import environment, model_commit, pick_device
+from runner import evaluate, fit, items_per_batch, planned_steps
+from vlm import LORA_TARGETS, answer_outputs, lm_head_of, load_model, train_mode
 
 PROJECT = Path(__file__).resolve().parents[1]
-# language-model layers only: model.language_model.layers.N (Qwen2.5-VL, LLaVA-OV),
-# language_model.model.layers.N (InternVL); vision layers never match
-LORA_TARGETS = r".*language_model\.(model\.)?layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)"
-VISION = ("model.visual", "model.vision_tower", "vision_model")  # Qwen2.5-VL, LLaVA-OV, InternVL
-NOT_INPUTS = ("labels", "answer_index", "target")
-
-
-def internvl_chat(model):
-    """The text InternVL's model.chat() puts around a query, split at the query: (before, after)."""
-    conv = sys.modules[type(model).__module__].get_conv_template(model.template)
-    conv.system_message = model.system_message
-    conv.append_message(conv.roles[0], "<<QUERY>>")
-    conv.append_message(conv.roles[1], None)
-    return tuple(conv.get_prompt().split("<<QUERY>>"))
-
-
-def load_model(name, model_dir):
-    """(model, its language model, collator), bf16 on the CPU. Gradient checkpointing goes on the second."""
-    if name.startswith("qwen"):
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_dir, dtype=torch.bfloat16)
-        return model, model, QwenCollator(AutoProcessor.from_pretrained(model_dir, use_fast=False))
-    if name.startswith("llava"):
-        model = LlavaOnevisionForConditionalGeneration.from_pretrained(model_dir, dtype=torch.bfloat16)
-        return model, model, LlavaOVCollator(AutoProcessor.from_pretrained(model_dir, use_fast=False))
-    model = AutoModel.from_pretrained(model_dir, dtype=torch.bfloat16, use_flash_attn=False, trust_remote_code=True)
-    model.language_model.config._attn_implementation = "sdpa"
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True, use_fast=False)
-    collate = InternVLCollator(tokenizer, internvl_chat(model), model.num_image_token)
-    model.img_context_token_id = collate.context_id
-    return model, model.language_model, collate
-
-
-def train_mode(model):
-    """Training mode (LoRA dropout on) except for the frozen vision encoder."""
-    model.train()
-    net = model.get_base_model()
-    for path in VISION:
-        try:
-            net.get_submodule(path).eval()
-        except AttributeError:
-            pass
-
-
-def lm_head_of(net):
-    return net.language_model.lm_head if hasattr(net, "extract_feature") else net.lm_head  # InternVL, others
-
-
-def answer_outputs(model, batch, device):
-    """(logits (cases, 2, vocab) in float32 at the answer position (predicting Yes / No) and the next one
-    (predicting <|im_end|>), last hidden state (cases, H) at the answer position)."""
-    net = model.get_base_model()
-    if hasattr(net, "extract_feature"):  # InternVL: tile features into the <IMG_CONTEXT> embeddings
-        lm, ids = net.language_model, batch["input_ids"].to(device)
-        vit = net.extract_feature(batch["pixel_values"].to(device, net.dtype))
-        emb = lm.get_input_embeddings()(ids)
-        emb = emb.masked_scatter((ids == net.img_context_token_id).unsqueeze(-1).expand_as(emb), vit.to(emb.dtype))
-        h = lm.model(inputs_embeds=emb, attention_mask=batch["attention_mask"].to(device),
-                     use_cache=False).last_hidden_state
-    else:  # Qwen2.5-VL, LLaVA-OV: the processor's outputs are the inputs
-        inputs = {k: v.to(device, net.dtype) if v.is_floating_point() else v.to(device)
-                  for k, v in batch.items() if k not in NOT_INPUTS}
-        h = net.model(**inputs, use_cache=False).last_hidden_state
-    rows = torch.arange(h.shape[0], device=h.device)
-    idx = batch["answer_index"].to(h.device)
-    at = torch.stack([h[rows, idx], h[rows, idx + 1]], 1)
-    return lm_head_of(net)(at).float(), at[:, 0]
-
-
-def answer_logits(model, batch, device):
-    return answer_outputs(model, batch, device)[0]
-
-
-def sft_loss(logits, batch):
-    rows, idx = torch.arange(len(logits)), batch["answer_index"]
-    targets = torch.stack([batch["labels"][rows, idx + 1], batch["labels"][rows, idx + 2]], 1).to(logits.device)
-    return F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-
-
-METHODS = {  # name -> (batches of single cases or of whole groups, terms added to CE)
-    "sft": ("case", ()),
-    "group-sft": ("group", ()),
-    "cf-rank": ("group", ("flip",)),
-    "cf-invariant": ("group", ("flip", "stay")),
-    "cf-metric": ("group", ("align", "uniform")),
-}
-
-
-def flip_term(m, gamma):
-    """m: margins, groups x cases A, B, C, D."""
-    return torch.stack([F.relu(gamma - (m[:, i] - m[:, j])) for i, j in FLIP_PAIRS]).mean()
-
-
-def stay_term(m, epsilon):
-    return torch.stack([F.relu((m[:, i] - m[:, j]).abs() - epsilon) for i, j in STAY_PAIRS]).mean()
-
-
-def align_term(u):
-    """u: unit features, cases in order A, B, C, D per group."""
-    g = u.view(-1, 4, u.shape[-1])
-    return torch.stack([(g[:, i] - g[:, j]).pow(2).sum(-1) for i, j in STAY_PAIRS]).mean()
-
-
-def uniform_term(u, bank=None):
-    """log of the mean of exp(-2 ||a - b||^2) over the pairs i < j of u and every pair of a row of u with a row of
-    bank (no gradient through bank). ||a - b||^2 = 2 - 2 a.b for unit vectors: no sqrt, so no NaN at a = b."""
-    i, j = torch.triu_indices(len(u), len(u), 1, device=u.device)
-    d2 = 2 - 2 * (u[i] * u[j]).sum(-1)
-    if bank is not None and len(bank):
-        d2 = torch.cat([d2, (2 - 2 * u @ bank.T).flatten()])
-    d2 = d2.clamp_min(0)
-    return torch.logsumexp(-2 * d2, 0) - math.log(len(d2))
-
-
-class Objective(torch.nn.Module):
-    """CE plus the method's terms (module docstring). forward(logits, hidden, batch) -> (loss, {term: value});
-    its parameters (the projection head, cf-metric only) train with the LoRA. Every training forward pushes its
-    features into the memory bank (newest first, at most bank_size)."""
-
-    def __init__(self, terms, collate, net, args):
-        super().__init__()
-        self.terms, self.yes_id, self.no_id = terms, collate.yes_id, collate.no_id
-        self.weights = {"flip": args.lambda_flip, "stay": args.lambda_stay, "align": args.alpha, "uniform": args.beta}
-        self.gamma, self.epsilon, self.bank_size = args.gamma, args.epsilon, args.bank_size
-        self.head = None
-        if {"align", "uniform"} & set(terms):
-            h = lm_head_of(net).in_features
-            self.head = torch.nn.Sequential(torch.nn.Linear(h, h), torch.nn.ReLU(), torch.nn.Linear(h, args.proj_dim))
-        self.register_buffer("bank", torch.zeros(0, args.proj_dim), persistent=False)
-
-    def margins(self, logits):
-        return (logits[:, 0, self.yes_id] - logits[:, 0, self.no_id]).view(-1, 4)  # groups x A, B, C, D
-
-    def features(self, hidden):
-        return F.normalize(self.head(hidden.float()), dim=-1)
-
-    def forward(self, logits, hidden, batch):
-        parts = {"ce": sft_loss(logits, batch)}
-        if self.terms:
-            target = batch["target"].view(-1, 4)
-            if not (target == target.new_tensor([1, 0, 1, 0])).all():
-                raise ValueError("these terms need whole groups, cases in order A, B, C, D")
-        if "flip" in self.terms:
-            parts["flip"] = flip_term(self.margins(logits), self.gamma)
-        if "stay" in self.terms:
-            parts["stay"] = stay_term(self.margins(logits), self.epsilon)
-        if self.head is not None:
-            u = self.features(hidden)
-            parts["align"] = align_term(u)
-            parts["uniform"] = uniform_term(u, self.bank)
-            self.bank = torch.cat([u.detach(), self.bank])[:self.bank_size]
-        loss = parts["ce"] + sum(self.weights[k] * parts[k] for k in self.terms)
-        return loss, {k: v.item() for k, v in parts.items()}
-
-
-def items_per_batch(batching, batch_size):
-    """DataLoader batch size: batch_size cases, as single cases or as whole groups of 4."""
-    return batch_size // (1 if batching == "case" else 4)
-
-
-def accumulation_plan(n_batches, grad_accum):
-    """[(loss scale, optimizer step after this batch)] for one epoch of n_batches. Batches go in groups of
-    grad_accum; a shorter last group is scaled by 1 / its own size and still ends with a step."""
-    plan = []
-    for start in range(0, n_batches, grad_accum):
-        size = min(grad_accum, n_batches - start)
-        plan += [(1 / size, j == size - 1) for j in range(size)]
-    return plan
-
-
-def planned_steps(n_batches, grad_accum, epochs, max_steps=None):
-    """Optimizer steps the run will take: ceil(n_batches / grad_accum) per epoch, capped at max_steps."""
-    steps = epochs * math.ceil(n_batches / grad_accum)
-    return min(steps, max_steps) if max_steps else steps
-
-
-def fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum, on_step=None, on_epoch=None):
-    """The optimizer loop every method shares. loss_of(batch) -> loss; on_step(step, epoch, mean loss of the
-    step's batches, grad norm) after each optimizer step; on_epoch(step, epoch) after each epoch (also the last,
-    cut short by steps). Gradients are cleared at every epoch start and after every step, so none crosses epochs.
-    Returns the optimizer steps taken."""
-    step = 0
-    for epoch in range(1, epochs + 1):
-        opt.zero_grad(set_to_none=True)
-        losses = []
-        for (scale, ends_step), batch in zip(accumulation_plan(len(loader), grad_accum), loader):
-            loss = loss_of(batch)
-            (loss * scale).backward()
-            losses.append(loss.item())
-            if not ends_step:
-                continue
-            grad_norm = torch.nn.utils.clip_grad_norm_(params, 1.0).item()
-            opt.step()
-            sched.step()
-            opt.zero_grad(set_to_none=True)
-            step += 1
-            if on_step:
-                on_step(step, epoch, sum(losses) / len(losses), grad_norm)
-            losses = []
-            if step >= steps:
-                break
-        if on_epoch:
-            on_epoch(step, epoch)
-        if step >= steps:
-            break
-    return step
-
-
-@torch.no_grad()
-def evaluate(model, loader, collate, device, objective):
-    """Dev metrics and the loss terms on dev (module docstring); the memory bank is neither read nor filled."""
-    model.eval()
-    margins, losses, feats = [], [], []
-    for batch in tqdm(loader, desc="dev", leave=False):
-        logits, hidden = answer_outputs(model, batch, device)
-        margins.append((logits[:, 0, collate.yes_id] - logits[:, 0, collate.no_id]).cpu())
-        losses.append(sft_loss(logits, batch).item())
-        if objective.head is not None:
-            feats.append(objective.features(hidden).cpu())
-    train_mode(model)
-    m = torch.cat(margins).view(-1, 4)  # groups x cases A, B, C, D
-    right = (m > 0) == torch.tensor([True, False, True, False])
-    terms = {"ce": sum(losses) / len(losses), "flip": flip_term(m, objective.gamma).item(),
-             "stay": stay_term(m, objective.epsilon).item()}
-    if feats:
-        u = torch.cat(feats)
-        terms.update(align=align_term(u).item(), uniform=uniform_term(u).item())
-    return {"groups": len(m),
-            "acc": round(right.float().mean().item(), 4),
-            "yes_ratio": round((m > 0).float().mean().item(), 4),
-            "group_acc": round(right.all(1).float().mean().item(), 4),
-            "flip_rank": round(torch.stack([m[:, i] > m[:, j] for i, j in FLIP_PAIRS]).float().mean().item(), 4),
-            "stay_gap": round(torch.stack([(m[:, i] - m[:, j]).abs() for i, j in STAY_PAIRS]).mean().item(), 3),
-            "terms": {k: round(v, 4) for k, v in terms.items()}}
-
-
-def environment(model_dir, device, template):
-    meta = model_dir / ".cache" / "huggingface" / "download" / "config.json.metadata"  # line 1: commit
-    return {"model_commit": meta.read_text().splitlines()[0] if meta.exists() else None,
-            "prompt": template, "dtype": "bfloat16",
-            "device": torch.cuda.get_device_name(device) if device.type == "cuda" else device.type,
-            "python": platform.python_version(), "torch": torch.__version__,
-            "transformers": transformers.__version__, "peft": __import__("peft").__version__,
-            "date": datetime.datetime.now().isoformat(timespec="seconds")}
 
 
 def main():
@@ -348,7 +70,7 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", help="appended to the run folder name")
-    terms = ap.add_argument_group("loss terms (placeholders until tuned)")
+    terms = ap.add_argument_group("loss terms (src/objectives.py; placeholders until tuned)")
     terms.add_argument("--lambda-flip", type=float, default=1.0, help="weight of Flip (cf-rank, cf-invariant)")
     terms.add_argument("--lambda-stay", type=float, default=1.0, help="weight of Stay (cf-invariant)")
     terms.add_argument("--gamma", type=float, default=2.0, help="Flip margin, in logit units")
@@ -363,7 +85,7 @@ def main():
         ap.error("--batch-size must be a multiple of 4, so every method can use the same batch size")
     batching, loss_terms = METHODS[args.method]
 
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, __version__ as peft_version, get_peft_model
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     model_dir = PROJECT / "models" / MODELS[args.model][0]
@@ -375,10 +97,11 @@ def main():
     model.to(device)
     lm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, target_modules=LORA_TARGETS))
-    objective = Objective(loss_terms, collate, model.get_base_model(), args).to(device)
+    hidden_size = lm_head_of(model.get_base_model()).in_features
+    objective = Objective(loss_terms, collate, hidden_size, args).to(device)
     trainable = sum(p.numel() for p in [*model.parameters(), *objective.parameters()] if p.requires_grad)
 
-    # sft: items are cases; group-sft: items are groups of 4 cases. Dev is always read by group (group metrics).
+    # sft: items are cases; group methods: items are groups of 4 cases. Dev is always read by group (group metrics).
     train = CaseDataset(args.train) if batching == "case" else GroupDataset(args.train)
     dev = GroupDataset("dev")
     if args.eval_groups:
@@ -395,7 +118,8 @@ def main():
     info = {**vars(args), "batching": batching, "loss": ["ce", *loss_terms], "train_items": len(train),
             "dev_groups": len(dev), "steps": steps,
             "trainable_params": trainable, "lora": {"r": 16, "alpha": 32, "dropout": 0.05, "targets": LORA_TARGETS},
-            **environment(model_dir, device, collate.template)}
+            "model_commit": model_commit(model_dir), "prompt": collate.template, "dtype": "bfloat16",
+            **environment(device), "peft": peft_version}
     (run_dir / "args.json").write_text(json.dumps(info, indent=2) + "\n")
     print(f"{run_dir.relative_to(PROJECT)}: {len(train)} train {batching}s, {steps} steps, "
           f"{trainable / 1e6:.1f}M trainable parameters, {device}")

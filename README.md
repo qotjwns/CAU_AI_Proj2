@@ -20,8 +20,13 @@ gen/
 │   ├── coco_pools.py             COCO 학습 데이터 1단계: 클래스별 P/N/어려운 N 가용 이미지 집계
 │   ├── build_coco_existence.py   COCO 학습 데이터 2단계: 4-Case Counterfactual Group(A/B/C/D) 생성·검증 (--check: 재현성 확인)
 │   ├── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
+│   ├── runinfo.py                실행 환경 기록 (장치 선택, 모델 커밋, 패키지 버전): 추론과 학습이 공유
 │   ├── cf_data.py                학습 공통 데이터: Group 로드·구조 검사, 프롬프트(configs/prompts.yaml), Qwen 배치·라벨
-│   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B), dev 지표 기록. --method: sft(문항 단위 Shuffle, CE), group-sft(Group 단위 배치, CE), cf-rank(CE + Flip), cf-invariant(CE + Flip + Stay), cf-metric(CE + Align + Uniform, 투영 헤드)
+│   ├── vlm.py                    학습용 모델 계열별 코드: 불러오기, LoRA 대상, 답변 위치 forward, 비전 인코더 고정
+│   ├── objectives.py             학습 방법과 손실: sft(문항 단위 Shuffle, CE), group-sft(Group 단위 배치, CE), cf-rank(CE + Flip), cf-invariant(CE + Flip + Stay), cf-metric(CE + Align + Uniform, 투영 헤드·memory bank)
+│   ├── metrics.py                margin(z_Yes − z_No) 기반 지표: acc, yes_ratio, group_acc, flip_rank, stay_gap
+│   ├── runner.py                 학습 루프(fit: gradient accumulation, step 계획)와 dev 평가 루프
+│   └── train.py                  LoRA 학습 실행 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B): 옵션 읽기, 위 모듈 조립, 실행 기록
 ├── tests/                        단위 테스트 (python -m unittest discover -s tests)
 ├── data/                         데이터셋
 │   ├── coco/

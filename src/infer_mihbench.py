@@ -22,31 +22,21 @@
     Models (same names as scripts/download_models.py): qwen2.5-vl-3b, qwen2.5-vl-7b, internvl2.5-4b, llava-ov-7b
 """
 import argparse
-import datetime
 import json
-import platform
 from importlib import metadata
 from pathlib import Path
 
 import torch
 import torchvision.transforms as T
-import transformers
 from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor
 
 from mihbench import TASKS, load_questions, parse_yes_no, score
 from prompts import PROMPTS, fill
+from runinfo import environment, model_commit, pick_device
 
 PROJECT = Path(__file__).resolve().parents[1]
-
-
-def pick_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
 
 
 def open_images(paths, size=None):
@@ -202,11 +192,6 @@ def check_prompt(out_dir, tasks, template, legacy):
                              "(configs/prompts.yaml). Move the folder away and re-run.")
 
 
-def model_commit(model_dir):
-    meta = model_dir / ".cache" / "huggingface" / "download" / "config.json.metadata"  # line 1: commit
-    return meta.read_text().splitlines()[0] if meta.exists() else None
-
-
 def attach_adapter(wrapper, adapter_dir, merge):
     """Put a trained LoRA (peft folder) on the wrapper's model: merged into the weights, or kept as separate
     layers (4-bit weights cannot take a merge). generate() and chat() reach the base model either way."""
@@ -226,11 +211,7 @@ def run_info(name, model_dir, model, load_4bit, template, method="vanilla", adap
         "load_4bit": load_4bit,
         "attn": model.attn,
         "prompt": template,
-        "device": torch.cuda.get_device_name(device) if device.type == "cuda" else device.type,
-        "python": platform.python_version(),
-        "torch": torch.__version__,
-        "transformers": transformers.__version__,
-        "date": datetime.datetime.now().isoformat(timespec="seconds"),
+        **environment(device),
     }
     if load_4bit:
         info["bitsandbytes"] = metadata.version("bitsandbytes")

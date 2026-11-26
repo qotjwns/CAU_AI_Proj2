@@ -1,5 +1,5 @@
 """
-    Gradient accumulation in src/train.py (accumulation_plan, planned_steps, fit), on a tiny linear model, and the
+    Gradient accumulation in src/runner.py (accumulation_plan, planned_steps, fit), on a tiny linear model, and the
     planned step counts of both methods on the real COCO existence splits.
     .venv/bin/python -m unittest tests.test_train_accum -v
 """
@@ -16,7 +16,9 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import runner  # noqa: E402
 import train  # noqa: E402
+from objectives import METHODS  # noqa: E402
 from cf_data import SPLITS, CaseDataset, GroupDataset  # noqa: E402
 
 
@@ -34,14 +36,14 @@ def run_fit(n_batches, grad_accum, epochs, max_steps=None):
             return super().step(closure)
 
     opt = RecordingSGD(params, lr=0.0)
-    steps = train.planned_steps(n_batches, grad_accum, epochs, max_steps)
+    steps = runner.planned_steps(n_batches, grad_accum, epochs, max_steps)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
     g = torch.Generator().manual_seed(1)
     loader = [(0.1 * torch.randn(2, 3, generator=g), 0.1 * torch.randn(2, 1, generator=g)) for _ in range(n_batches)]
     loss_of = lambda b: torch.nn.functional.mse_loss(model(b[0]), b[1])
     per_batch = [torch.autograd.grad(loss_of(b), params) for b in loader]
     ends = []
-    taken = train.fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum,
+    taken = runner.fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum,
                       on_epoch=lambda step, epoch: ends.append((epoch, step)))
     return {"taken": taken, "steps": steps, "sched": sched.last_epoch, "stepped": stepped,
             "per_batch": per_batch, "epoch_ends": ends, "grads_left": [p.grad for p in params]}
@@ -59,27 +61,27 @@ def expected_grads(per_batch, grad_accum, epochs, steps):
 
 class Plan(unittest.TestCase):
     def test_divisible(self):
-        plan = train.accumulation_plan(6, 2)
+        plan = runner.accumulation_plan(6, 2)
         self.assertEqual([s for s, _ in plan], [0.5] * 6)
         self.assertEqual([e for _, e in plan], [False, True] * 3)
 
     def test_remainder(self):
-        plan = train.accumulation_plan(7, 3)
+        plan = runner.accumulation_plan(7, 3)
         self.assertEqual([s for s, _ in plan], [1 / 3] * 6 + [1.0])  # the leftover batch alone: scale 1
         self.assertEqual([i for i, (_, e) in enumerate(plan) if e], [2, 5, 6])
 
     def test_accumulation_longer_than_epoch(self):
-        plan = train.accumulation_plan(3, 5)
+        plan = runner.accumulation_plan(3, 5)
         self.assertEqual(plan, [(1 / 3, False), (1 / 3, False), (1 / 3, True)])
 
     def test_no_accumulation(self):
-        self.assertEqual(train.accumulation_plan(4, 1), [(1.0, True)] * 4)
+        self.assertEqual(runner.accumulation_plan(4, 1), [(1.0, True)] * 4)
 
     def test_planned_steps(self):
-        self.assertEqual(train.planned_steps(6, 2, 2), 6)
-        self.assertEqual(train.planned_steps(7, 3, 2), 6)  # ceil(7 / 3) = 3 per epoch
-        self.assertEqual(train.planned_steps(7, 2, 3, max_steps=5), 5)
-        self.assertEqual(train.planned_steps(1170, 1, 1), 1170)
+        self.assertEqual(runner.planned_steps(6, 2, 2), 6)
+        self.assertEqual(runner.planned_steps(7, 3, 2), 6)  # ceil(7 / 3) = 3 per epoch
+        self.assertEqual(runner.planned_steps(7, 2, 3, max_steps=5), 5)
+        self.assertEqual(runner.planned_steps(1170, 1, 1), 1170)
 
 
 class Fit(unittest.TestCase):
@@ -123,15 +125,15 @@ class RealSplits(unittest.TestCase):
     """Both methods plan the same optimizer steps, as main() builds their loaders."""
 
     def steps(self, split, method, batch_size, grad_accum):
-        batching = train.METHODS[method][0]
+        batching = METHODS[method][0]
         data = CaseDataset(split) if batching == "case" else GroupDataset(split)
-        loader = DataLoader(data, batch_size=train.items_per_batch(batching, batch_size))
-        return train.planned_steps(len(loader), grad_accum, epochs=1)
+        loader = DataLoader(data, batch_size=runner.items_per_batch(batching, batch_size))
+        return runner.planned_steps(len(loader), grad_accum, epochs=1)
 
     def test_methods_agree(self):
         for split, at_8 in (("pilot_train", 234), ("train", 1170)):
             for batch_size, grad_accum, want in ((8, 1, at_8), (4, 2, at_8), (12, 7, None)):
-                got = {m: self.steps(split, m, batch_size, grad_accum) for m in train.METHODS}
+                got = {m: self.steps(split, m, batch_size, grad_accum) for m in METHODS}
                 self.assertEqual(len(set(got.values())), 1, (split, batch_size, grad_accum, got))
                 if want:
                     self.assertEqual(got["sft"], want, (split, batch_size, grad_accum))
@@ -142,7 +144,7 @@ class Tiny(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.lin = torch.nn.Linear(1, 2)
+        self.lin = self.lm_head = torch.nn.Linear(1, 2)  # vlm.lm_head_of reads lm_head
 
     def forward(self, x):
         return self.lin(x)
@@ -158,7 +160,7 @@ class Tiny(torch.nn.Module):
 
 
 class TinyObjective(torch.nn.Module):
-    """Stands in for train.Objective: the mean square of the tiny model's output, no extra parameters."""
+    """Stands in for objectives.Objective: the mean square of the tiny model's output, no extra parameters."""
     head = None
 
     def __init__(self, *args):
@@ -201,7 +203,7 @@ class Main(unittest.TestCase):
         return args, log
 
     def test_both_methods_take_the_planned_steps(self):
-        for method in train.METHODS:
+        for method in METHODS:
             for batch_size, grad_accum, epochs, per_epoch in ((8, 1, 1, 234), (4, 5, 2, 94)):  # 468 / 5: rest 3
                 with tempfile.TemporaryDirectory() as tmp:
                     args, log = self.run_main(method, batch_size, grad_accum, epochs, tmp)

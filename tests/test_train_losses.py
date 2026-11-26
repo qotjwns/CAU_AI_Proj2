@@ -1,5 +1,5 @@
 """
-    The loss terms of src/train.py (Objective) against their formulas, on hand-made logits and hidden states.
+    The loss terms of src/objectives.py (Objective) against their formulas, on hand-made logits and hidden states.
     .venv/bin/python -m unittest tests.test_train_losses -v
 """
 import math
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import train  # noqa: E402
+import objectives  # noqa: E402
 
 YES, NO, END, VOCAB, H = 0, 1, 2, 5, 6
 
@@ -37,8 +37,7 @@ def objective(method, **kw):
     args = types.SimpleNamespace(**{"lambda_flip": 1.0, "lambda_stay": 1.0, "gamma": 2.0, "epsilon": 0.5,
                                     "alpha": 1.0, "beta": 1.0, "proj_dim": 4, "bank_size": 256, **kw})
     collate = types.SimpleNamespace(yes_id=YES, no_id=NO)
-    net = types.SimpleNamespace(lm_head=torch.nn.Linear(H, VOCAB))  # only its in_features is read
-    return train.Objective(train.METHODS[method][1], collate, net, args)
+    return objectives.Objective(objectives.METHODS[method][1], collate, H, args)
 
 
 class Terms(unittest.TestCase):
@@ -46,7 +45,7 @@ class Terms(unittest.TestCase):
         logits, batch = make_batch([3, -3, 3, -3])
         loss, parts = objective("sft")(logits, None, batch)
         self.assertEqual(set(parts), {"ce"})
-        torch.testing.assert_close(loss, train.sft_loss(logits, batch))
+        torch.testing.assert_close(loss, objectives.sft_loss(logits, batch))
 
     def test_flip(self):
         # group 1: m_A - m_B = 1 -> 1, m_C - m_D = 5 -> 0;  group 2: 2 -> 0, -1 -> 3
@@ -101,8 +100,8 @@ class Terms(unittest.TestCase):
 
     def test_dev_terms(self):
         m = torch.tensor([[3.0, -2.0, 1.0, -2.25]])
-        self.assertAlmostEqual(train.flip_term(m, 2.0).item(), (0 + 0) / 2)
-        self.assertAlmostEqual(train.stay_term(m, 0.5).item(), (1.5 + 0) / 2)
+        self.assertAlmostEqual(objectives.flip_term(m, 2.0).item(), (0 + 0) / 2)
+        self.assertAlmostEqual(objectives.stay_term(m, 0.5).item(), (1.5 + 0) / 2)
 
     def test_group_terms_need_whole_groups(self):
         logits, batch = make_batch([1, -1, 1, -1])
