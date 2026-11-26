@@ -26,7 +26,8 @@ gen/
 │   ├── objectives.py             학습 방법과 손실: sft(문항 단위 Shuffle, CE), group-sft(Group 단위 배치, CE), cf-rank(CE + Flip), cf-invariant(CE + Flip + Stay), cf-metric(CE + Align + Uniform, 투영 헤드·memory bank)
 │   ├── metrics.py                margin(z_Yes − z_No) 기반 지표: acc, yes_ratio, group_acc, flip_rank, stay_gap
 │   ├── runner.py                 학습 루프(fit: gradient accumulation, step 계획)와 dev 평가 루프
-│   └── train.py                  LoRA 학습 실행 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B): 옵션 읽기, 위 모듈 조립, 실행 기록
+│   ├── train.py                  LoRA 학습 실행 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B): 옵션 읽기, 위 모듈 조립, 실행 기록
+│   └── experiment.py             실험 한 번을 끝까지: 학습(train.py) → adapter로 MIHBench 추론(infer_mihbench.py --adapter) → 채점·그래프(eval_mihbench.py --method), --vanilla로 학습 전 모델 기준선도 함께
 ├── tests/                        단위 테스트 (python -m unittest discover -s tests)
 ├── data/                         데이터셋
 │   ├── coco/
