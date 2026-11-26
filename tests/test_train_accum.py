@@ -144,7 +144,7 @@ class Tiny(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.lin = self.lm_head = torch.nn.Linear(1, 2)  # vlm.lm_head_of reads lm_head
+        self.lin = torch.nn.Linear(1, 2)
 
     def forward(self, x):
         return self.lin(x)
@@ -172,10 +172,32 @@ class TinyObjective(torch.nn.Module):
 
 
 class TinyCollate:
+    """Stands in for cf_data.Collator."""
     template, yes_id, no_id = "{question}", 0, 1
 
     def __call__(self, items):
         return {"x": torch.ones(sum(len(x) if isinstance(x, list) else 1 for x in items), 1)}
+
+
+class TinyFamily:
+    """Stands in for a model family of src/models.py."""
+
+    @classmethod
+    def for_training(cls, model_dir):
+        model = Tiny()
+        return model, model, None
+
+    @staticmethod
+    def answer_outputs(model, batch, device):
+        return model(batch["x"]), None
+
+    @staticmethod
+    def lm_head(net):
+        return net.lin
+
+    @staticmethod
+    def train_mode(model):
+        model.train()
 
 
 @unittest.skipUnless((SPLITS / "pilot_train.jsonl").exists(), "data/coco_existence not built")
@@ -190,9 +212,9 @@ class Main(unittest.TestCase):
                 "--batch-size", str(batch_size), "--grad-accum", str(grad_accum), "--epochs", str(epochs),
                 "--workers", "0", "--log-every", "1", "--tag", "test"]
         with mock.patch.multiple(train, PROJECT=Path(tmp), pick_device=lambda: "cpu",
-                                 load_model=lambda name, model_dir: (Tiny(), Tiny(), TinyCollate()),
-                                 answer_outputs=lambda model, batch, device: (model(batch["x"]), None),
-                                 evaluate=lambda model, loader, collate, device, objective: {"acc": 0.0},
+                                 MODELS={"qwen2.5-vl-3b": ("Tiny", TinyFamily)},
+                                 Collator=lambda inputs: TinyCollate(),
+                                 evaluate=lambda loader, collate, objective, forward: {"acc": 0.0},
                                  Objective=TinyObjective), \
                 mock.patch.dict(sys.modules, {"peft": fake_peft}), mock.patch.object(sys, "argv", argv), \
                 mock.patch("sys.stdout"), mock.patch("sys.stderr"):

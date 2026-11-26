@@ -81,7 +81,7 @@ class Objective(torch.nn.Module):
     """CE plus the method's terms (module docstring). forward(logits, hidden, batch) -> (loss, {term: value});
     its parameters (the projection head, cf-metric only) train with the LoRA. Every training forward pushes its
     features into the memory bank (newest first, at most bank_size). hidden_size: the size of h (the language
-    model's hidden size, vlm.lm_head_of(net).in_features); args holds the weights and margins of src/train.py."""
+    model's hidden size, models.<Family>.lm_head(net).in_features); args holds the weights and margins of src/train.py."""
 
     def __init__(self, terms, collate, hidden_size, args):
         super().__init__()

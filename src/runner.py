@@ -8,6 +8,8 @@
       evaluate  dev metrics (src/metrics.py) and the loss terms on dev, with the run's gamma and epsilon, for every
                 method (so an SFT run shows them too): ce, flip, stay; cf-metric adds align and uniform (over all
                 dev case pairs, no memory bank)
+    Neither loop knows the model: fit gets loss_of(batch), evaluate gets forward(batch) -> (logits, hidden)
+    (models.<Family>.answer_outputs in src/train.py).
 """
 import math
 
@@ -16,7 +18,6 @@ from tqdm import tqdm
 
 from metrics import margin_metrics
 from objectives import align_term, flip_term, margin, sft_loss, stay_term, uniform_term
-from vlm import answer_outputs, train_mode
 
 
 def items_per_batch(batching, batch_size):
@@ -73,17 +74,16 @@ def fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum, on_step=
 
 
 @torch.no_grad()
-def evaluate(model, loader, collate, device, objective):
-    """Dev metrics and the loss terms on dev (module docstring); the memory bank is neither read nor filled."""
-    model.eval()
+def evaluate(loader, collate, objective, forward):
+    """Dev metrics and the loss terms on dev (module docstring); the memory bank is neither read nor filled.
+    The caller puts the model in eval mode first and back in training mode after."""
     margins, losses, feats = [], [], []
     for batch in tqdm(loader, desc="dev", leave=False):
-        logits, hidden = answer_outputs(model, batch, device)
+        logits, hidden = forward(batch)
         margins.append(margin(logits, collate.yes_id, collate.no_id).cpu())
         losses.append(sft_loss(logits, batch).item())
         if objective.head is not None:
             feats.append(objective.features(hidden).cpu())
-    train_mode(model)
     m = torch.cat(margins).view(-1, 4)  # groups x cases A, B, C, D
     terms = {"ce": sum(losses) / len(losses), "flip": flip_term(m, objective.gamma).item(),
              "stay": stay_term(m, objective.epsilon).item()}

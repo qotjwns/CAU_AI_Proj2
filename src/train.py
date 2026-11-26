@@ -4,7 +4,9 @@
     together and records the run. The pieces:
       src/objectives.py  the methods (sft, group-sft, cf-rank, cf-invariant, cf-metric) and their loss terms
       src/runner.py      the optimizer loop (gradient accumulation) and the dev loop
-      src/vlm.py         per model family: loading, LoRA targets, the forward pass to the answer position
+      src/models.py      per model family: loading, inputs (shared with MIHBench inference), LoRA targets, the
+                         forward pass to the answer position
+      src/cf_data.py     the groups and the collator
       src/metrics.py     dev metrics from the answer margin
       src/runinfo.py     device, model commit and versions, recorded in args.json
     Every method uses the same data, model and number of cases per batch (--batch-size); one epoch is 1,170
@@ -43,12 +45,11 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
-from cf_data import CaseDataset, GroupDataset
-from infer_mihbench import MODELS
+from cf_data import CaseDataset, Collator, GroupDataset
+from models import LORA_TARGETS, MODELS
 from objectives import METHODS, Objective
 from runinfo import environment, model_commit, pick_device
 from runner import evaluate, fit, items_per_batch, planned_steps
-from vlm import LORA_TARGETS, answer_outputs, lm_head_of, load_model, train_mode
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -88,17 +89,28 @@ def main():
     from peft import LoraConfig, __version__ as peft_version, get_peft_model
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    model_dir = PROJECT / "models" / MODELS[args.model][0]
+    folder, family = MODELS[args.model]
+    model_dir = PROJECT / "models" / folder
     run_dir = PROJECT / "runs" / args.method / (args.model + (f"-{args.tag}" if args.tag else ""))
     run_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(pick_device())
 
-    model, lm, collate = load_model(args.model, model_dir)
+    model, lm, inputs = family.for_training(model_dir)
+    collate = Collator(inputs)
     model.to(device)
     lm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, target_modules=LORA_TARGETS))
-    hidden_size = lm_head_of(model.get_base_model()).in_features
+    hidden_size = family.lm_head(model.get_base_model()).in_features
     objective = Objective(loss_terms, collate, hidden_size, args).to(device)
+
+    def forward(batch):
+        return family.answer_outputs(model, batch, device)
+
+    def run_dev():
+        model.eval()
+        metrics = evaluate(dev_loader, collate, objective, forward)
+        family.train_mode(model)
+        return metrics
     trainable = sum(p.numel() for p in [*model.parameters(), *objective.parameters()] if p.requires_grad)
 
     # sft: items are cases; group methods: items are groups of 4 cases. Dev is always read by group (group metrics).
@@ -129,17 +141,17 @@ def main():
         log.write(json.dumps(rec) + "\n")
         log.flush()
 
-    dev_metrics = evaluate(model, dev_loader, collate, device, objective)
+    dev_metrics = run_dev()
     write({"step": 0, "epoch": 0, "dev": dev_metrics})
     print(f"dev before training: {dev_metrics}")
 
-    train_mode(model)
+    family.train_mode(model)
     objective.train()
     window, part_window = [], []
     bar = tqdm(total=steps, desc=args.method)
 
     def loss_of(batch):
-        loss, parts = objective(*answer_outputs(model, batch, device), batch)
+        loss, parts = objective(*forward(batch), batch)
         part_window.append(parts)
         return loss
 
@@ -158,7 +170,7 @@ def main():
         model.save_pretrained(run_dir / "adapter")
         if objective.head is not None:
             torch.save(objective.head.state_dict(), run_dir / "projection_head.pt")
-        dev_metrics = evaluate(model, dev_loader, collate, device, objective)
+        dev_metrics = run_dev()
         write({"step": step, "epoch": epoch, "dev": dev_metrics})
         print(f"\ndev after epoch {epoch}: {dev_metrics}")
 
