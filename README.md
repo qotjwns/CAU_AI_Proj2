@@ -15,6 +15,8 @@ gen/
 │   ├── mihbench.py               MIHBench 문항 로드, Yes/No 파싱, 공식 지표 계산 (모델과 무관)
 │   ├── infer_mihbench.py         VLM으로 MIHBench 추론 후 채점
 │   ├── eval_mihbench.py          저장된 응답을 다시 채점해 모델 비교 표(summary.csv)와 그래프 생성
+│   ├── compare_paper.py          existence 결과를 MIHBench 논문 Table 2 수치와 비교 (표·그래프)
+│   ├── analyze_no_bias.py        yes 문항에 No라고 답하는 이유 분석 (COCO 어노테이션과 응답의 설명 이용)
 │   ├── coco_pools.py             COCO 학습 데이터 1단계: 클래스별 P/N/어려운 N 가용 이미지 집계
 │   └── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
 ├── data/                         데이터셋
@@ -37,10 +39,12 @@ gen/
 │           ├── <model>/          예: qwen2.5-vl-3b-4bit/ (프롬프트는 configs/prompts.yaml, 기본은 질문 + 공식 yes/no 지시문. -4bit: 공식 Qwen 설정(4bit + eager), -sdpa: InternVL을 sdpa로 실행, -noyn: 지시문 없이 돌린 이전 결과, -official[-yn]: DAB 공식 스크립트로 돌린 Qwen 결과)
 │           │   ├── <task>.jsonl  문항별 모델 응답
 │           │   └── metrics.json  태스크별 accuracy, precision, recall, F1, yes-ratio + 실행 환경
-│           └── summary.csv       모델 × 태스크 × subset(all, no_typo) 지표 (src/eval_mihbench.py)
+│           ├── summary.csv       모델 × 태스크 × subset 지표 (src/eval_mihbench.py; subset: all, no_typo, seen_classes, unseen_classes, label_consistent, large_objects)
+│           ├── paper_comparison.csv  논문 수치와 비교한 existence 지표 (src/compare_paper.py)
+│           └── no_bias.json      No 편향 분석 수치 (src/analyze_no_bias.py)
 └── figures/                      그래프 (results/와 같은 구조)
     └── mihbench/
-        └── vanilla/              mihbench.png, mihbench_no_typo.png (src/eval_mihbench.py)
+        └── vanilla/              mihbench*.png (src/eval_mihbench.py), paper_comparison.png (src/compare_paper.py), no_bias.png (src/analyze_no_bias.py)
 ```
 
 ### 폴더별 역할
@@ -52,8 +56,8 @@ gen/
 | `data/coco/` | COCO train2014 이미지와 instance 어노테이션 | `scripts/download_coco_train2014.py` | 제외 |
 | `data/mihbench/` | MIHBench 5개 태스크 문항과 이미지 | `scripts/download_mihbench.py` | 제외 |
 | `models/` | VLM 체크포인트 (커밋 고정) | `scripts/download_models.py` | 제외 |
-| `results/` | 방법·모델별 응답과 지표, 비교 표 | `src/infer_mihbench.py`, `src/eval_mihbench.py` | 제외 |
-| `figures/` | 방법별 그래프 | `src/eval_mihbench.py` | 제외 |
+| `results/` | 방법·모델별 응답과 지표, 비교 표 | `src/infer_mihbench.py`, `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py` | 제외 |
+| `figures/` | 방법별 그래프 | `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py` | 제외 |
 
 ### MIHBench 태스크
 
