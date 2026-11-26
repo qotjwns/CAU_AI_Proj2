@@ -126,6 +126,27 @@ def mihbench_object_sizes(classes):
     return size_summary(pairs.values())
 
 
+def mihbench_existence_flags():
+    """{(task, question_id): (label_consistent, large_objects)} for the MIHBench existence questions, judged with
+    the val2014 annotations, or None if instances_val2014.json is missing.
+      label_consistent  the label is yes exactly when every image holds the asked class
+      large_objects     each image lacks the class or holds it at >= 1% (the training P/N definition)"""
+    val_path = COCO / "annotations" / "instances_val2014.json"
+    if not val_path.exists():
+        return None
+    _, classes, present = load_coco(val_path)
+    by_name = {c["name"]: i for i, c in classes.items()}
+    flags = {}
+    for path in sorted(MIHBENCH.glob("existence_*.jsonl")):
+        with open(path) as f:
+            for q in (json.loads(line) for line in f if line.strip()):
+                c = by_name[MIH_QUESTION.fullmatch(q["text"]).group(1)]
+                r = [present.get(int(MIH_COCO.fullmatch(n).group(1)), {}).get(c) for n in q["image_list"]]
+                flags[path.stem, q["question_id"]] = ((q["label"] == "yes") == all(x is not None for x in r),
+                                                      all(x is None or x >= MIN_AREA for x in r))
+    return flags
+
+
 def main():
     images, classes, present = load_coco(COCO / "annotations" / "instances_train2014.json")
     comp = companions(classes, present)

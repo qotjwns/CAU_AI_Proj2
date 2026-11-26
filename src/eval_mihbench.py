@@ -4,11 +4,15 @@
     (written by src/infer_mihbench.py). Every answer is re-parsed with the official yes/no rule.
       results/mihbench/<method>/summary.csv              one row per model x task x subset
       figures/mihbench/<method>/mihbench.png             accuracy, F1, yes-ratio per model and task
-      figures/mihbench/<method>/mihbench_no_typo.png, mihbench_seen_classes.png
+      figures/mihbench/<method>/mihbench_<subset>.png      the same for every other plotted subset
     subset "all" is every question; "no_typo" drops the 86 existence questions whose text is broken
     ("Is there an umbrella in the imange? in all 3 images?"); "seen_classes" drops the questions on classes left
     out of the COCO training data (toaster, hair drier: EXCLUDED_CLASSES in src/coco_pools.py) and
     "unseen_classes" keeps only those (58 existence, 7 count questions; printed, not plotted).
+    Existence only, judged with the COCO val2014 annotations (skipped without instances_val2014.json):
+    "label_consistent" keeps the questions whose label agrees with the annotations (yes exactly when every image
+    holds the object; about 40% of the yes labels do not), "large_objects" those whose images all fit the
+    training P/N definition (the object absent, or at >= 1% of the image).
     python src/eval_mihbench.py                    # method vanilla
     python src/eval_mihbench.py --method vanilla --results-dir results/mihbench
 """
@@ -25,7 +29,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import PathPatch, Rectangle
 from matplotlib.path import Path as MplPath
 
-from coco_pools import EXCLUDED_CLASSES
+from coco_pools import EXCLUDED_CLASSES, mihbench_existence_flags
 from mihbench import TASKS, parse_yes_no, score
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -36,6 +40,8 @@ SUBSETS = {  # subset -> figure footnote (None: not plotted)
     "no_typo": 'without the 86 "in the imange?" questions',
     "seen_classes": f"without the questions on classes left out of training ({', '.join(EXCLUDED_CLASSES)})",
     "unseen_classes": None,
+    "label_consistent": "existence questions whose label agrees with the COCO annotations",
+    "large_objects": "existence questions whose images hold the object at >= 1% of the image or not at all",
 }
 TASK_LABELS = {
     "existence_random": "Random",
@@ -95,7 +101,7 @@ def load(method_dir):
     return {m: found[m] for m in sorted(found, key=key)}
 
 
-def summarize(data, method):
+def summarize(data, method, flags):
     rows = []
     for model, tasks in data.items():
         for task, answers in tasks.items():
@@ -106,10 +112,15 @@ def summarize(data, method):
             subsets = {"all": answers, "no_typo": [a for a in answers if "imange" not in a["question"]],
                        "seen_classes": [a for a in answers if not UNSEEN.search(a["question"])],
                        "unseen_classes": [a for a in answers if UNSEEN.search(a["question"])]}
+            if flags is not None and task.startswith("existence_"):
+                subsets["label_consistent"] = [a for a in answers if flags[task, a["question_id"]][0]]
+                subsets["large_objects"] = [a for a in answers if flags[task, a["question_id"]][1]]
             for subset, subset_rows in subsets.items():
                 if subset_rows:  # id_consistency has no unseen-class questions
                     rows.append({"method": method, "model": model, "task": task, "subset": subset,
-                                 **score(subset_rows)})
+                                 **score(subset_rows),
+                                 "label_yes_ratio": sum(a["label"].lower() == "yes" for a in subset_rows)
+                                 / len(subset_rows)})
     return rows
 
 
@@ -168,9 +179,12 @@ def plot(rows, subset, out_path):
                     continue
                 x = i - group / 2 + j * width + gap / 2
                 rounded_bar(ax, x, width - gap, 100 * r[metric], colors[model])
-        if metric == "yes_ratio":  # half the labels are yes, so an unbiased model sits at 50%
-            ax.axhline(50, color=INK_2, linewidth=0.8)
-            ax.text(len(tasks) - 0.5, 51.5, "balanced", color=INK_2, fontsize=7.5, ha="right", va="bottom")
+        if metric == "yes_ratio":  # an unbiased model says yes as often as the labels do: 50% in the full set,
+            for i, task in enumerate(tasks):  # less in label_consistent / large_objects, so mark it per task
+                share = 100 * next(r["label_yes_ratio"] for r in rows if r["task"] == task)
+                ax.hlines(share, i - group / 2, i + group / 2, color=INK_2, linewidth=0.8)
+            ax.text(len(tasks) - 0.5, share + 1.5, "label yes share", color=INK_2, fontsize=7.5,
+                    ha="right", va="bottom")
     handles = [Rectangle((0, 0), 1, 1, facecolor=colors[m], linewidth=0) for m in models]
     fig.legend(handles, [display_name(m) for m in models], loc="upper center", ncol=len(models), frameon=False,
                fontsize=8.5, labelcolor=INK_2, handlelength=0.9, handleheight=0.9, bbox_to_anchor=(0.5, 1.0))
@@ -193,7 +207,11 @@ def main():
     data = load(method_dir)
     if not data:
         raise SystemExit(f"no <model>/<task>.jsonl under {method_dir}")
-    rows = summarize(data, args.method)
+    flags = mihbench_existence_flags()
+    if flags is None:
+        print("warning: data/coco/annotations/instances_val2014.json not found, "
+              "skipping label_consistent and large_objects (python scripts/download_coco_train2014.py)")
+    rows = summarize(data, args.method, flags)
 
     summary = method_dir / "summary.csv"
     with open(summary, "w", newline="") as f:
@@ -201,6 +219,8 @@ def main():
         w.writeheader()
         w.writerows(rows)
     for subset, note in SUBSETS.items():
+        if not any(r["subset"] == subset for r in rows):
+            continue
         print(f"\n[{subset}]")
         print(f"{'model':<24}{'task':<24}{'n':>5}{'acc':>8}{'prec':>8}{'rec':>8}{'f1':>8}{'yes':>8}")
         for r in rows:
