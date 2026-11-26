@@ -7,8 +7,12 @@
       figures/mihbench/<method>/mihbench_<subset>.png      the same for every other plotted subset
     subset "all" is every question; "no_typo" drops the 86 existence questions whose text is broken
     ("Is there an umbrella in the imange? in all 3 images?"); "seen_classes" drops the questions on classes left
-    out of the COCO training data (toaster, hair drier: EXCLUDED_CLASSES in src/coco_pools.py) and
-    "unseen_classes" keeps only those (58 existence, 7 count questions; printed, not plotted).
+    out of the COCO training data (EXCLUDED_CLASSES in src/coco_pools.py, now toaster and hair drier) and
+    "unseen_classes" keeps only those (58 existence, 7 count questions; printed, not plotted). A question's class
+    is read from its text (mihbench.question_class) and compared by name; ID consistency asks about CO3D
+    objects, so all of it is seen. With no class left out, every question is seen.
+    A subset that applies to a task but holds no question (unseen_classes of ID consistency, or of every task
+    when no class is left out) gets n = 0 and N/A metrics.
     Existence only, judged with the COCO val2014 annotations (skipped without instances_val2014.json):
     "label_consistent" keeps the questions whose label agrees with the annotations (yes exactly when every image
     holds the object; about 40% of the yes labels do not), "large_objects" those whose images all fit the
@@ -19,7 +23,6 @@
 import argparse
 import csv
 import json
-import re
 from pathlib import Path
 
 import matplotlib
@@ -30,19 +33,29 @@ from matplotlib.patches import PathPatch, Rectangle
 from matplotlib.path import Path as MplPath
 
 from coco_pools import EXCLUDED_CLASSES, mihbench_existence_flags
-from mihbench import TASKS, parse_yes_no, score
+from mihbench import COCO_CLASSES, TASKS, parse_yes_no, question_class, score
 
 PROJECT = Path(__file__).resolve().parents[1]
 N_QUESTIONS = 800
-UNSEEN = re.compile(r"\b(?:" + "|".join(map(re.escape, EXCLUDED_CLASSES)) + r")s?\b")  # "toaster", "toasters"
-SUBSETS = {  # subset -> figure footnote (None: not plotted)
-    "all": "every question",
-    "no_typo": 'without the 86 "in the imange?" questions',
-    "seen_classes": f"without the questions on classes left out of training ({', '.join(EXCLUDED_CLASSES)})",
-    "unseen_classes": None,
-    "label_consistent": "existence questions whose label agrees with the COCO annotations",
-    "large_objects": "existence questions whose images hold the object at >= 1% of the image or not at all",
-}
+METRIC_KEYS = ("accuracy", "precision", "recall", "f1", "yes_ratio")
+NA = "N/A"  # summary.csv and printout for the metrics of a subset with no question
+
+
+def subset_notes(excluded=EXCLUDED_CLASSES):
+    """{subset: figure footnote, None if not plotted}."""
+    seen = (f"without the questions on classes left out of training ({', '.join(excluded)})" if excluded
+            else "every question (no class is left out of training)")
+    return {
+        "all": "every question",
+        "no_typo": 'without the 86 "in the imange?" questions',
+        "seen_classes": seen,
+        "unseen_classes": None,
+        "label_consistent": "existence questions whose label agrees with the COCO annotations",
+        "large_objects": "existence questions whose images hold the object at >= 1% of the image or not at all",
+    }
+
+
+SUBSETS = subset_notes()
 TASK_LABELS = {
     "existence_random": "Random",
     "existence_popular": "Popular",
@@ -101,7 +114,26 @@ def load(method_dir):
     return {m: found[m] for m in sorted(found, key=key)}
 
 
-def summarize(data, method, flags):
+def split_classes(task, answers, excluded):
+    """(seen, unseen) answers: unseen asks about a class in excluded, compared by class name."""
+    unseen = [a for a in answers if question_class(task, a["question"]) in excluded]
+    ids = {id(a) for a in unseen}
+    return [a for a in answers if id(a) not in ids], unseen
+
+
+def subset_row(method, model, task, subset, answers):
+    """The metrics of one subset; n = 0 and None (N/A) metrics when it holds no question."""
+    row = {"method": method, "model": model, "task": task, "subset": subset}
+    if not answers:
+        return {**row, "n": 0, **dict.fromkeys(METRIC_KEYS), "label_yes_ratio": None}
+    return {**row, **score(answers),
+            "label_yes_ratio": sum(a["label"].lower() == "yes" for a in answers) / len(answers)}
+
+
+def summarize(data, method, flags, excluded=EXCLUDED_CLASSES):
+    unknown = sorted(set(excluded) - set(COCO_CLASSES))
+    if unknown:
+        raise ValueError(f"EXCLUDED_CLASSES holds names that are not COCO classes: {unknown}")
     rows = []
     for model, tasks in data.items():
         for task, answers in tasks.items():
@@ -109,19 +141,26 @@ def summarize(data, method, flags):
                 print(f"warning: {model}/{task} has {len(answers)} answers, not {N_QUESTIONS}")
             for a in answers:
                 a["pred"] = parse_yes_no(a["text"])
+            seen, unseen = split_classes(task, answers, excluded)
             subsets = {"all": answers, "no_typo": [a for a in answers if "imange" not in a["question"]],
-                       "seen_classes": [a for a in answers if not UNSEEN.search(a["question"])],
-                       "unseen_classes": [a for a in answers if UNSEEN.search(a["question"])]}
+                       "seen_classes": seen, "unseen_classes": unseen}
             if flags is not None and task.startswith("existence_"):
                 subsets["label_consistent"] = [a for a in answers if flags[task, a["question_id"]][0]]
                 subsets["large_objects"] = [a for a in answers if flags[task, a["question_id"]][1]]
-            for subset, subset_rows in subsets.items():
-                if subset_rows:  # id_consistency has no unseen-class questions
-                    rows.append({"method": method, "model": model, "task": task, "subset": subset,
-                                 **score(subset_rows),
-                                 "label_yes_ratio": sum(a["label"].lower() == "yes" for a in subset_rows)
-                                 / len(subset_rows)})
+            rows += [subset_row(method, model, task, s, subset_answers) for s, subset_answers in subsets.items()]
     return rows
+
+
+def write_summary(rows, path):
+    """summary.csv; N/A where a metric is None."""
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows({k: NA if v is None else v for k, v in r.items()} for r in rows)
+
+
+def fmt(value):
+    return f"{NA:>8}" if value is None else f"{value:>8.3f}"
 
 
 def rounded_bar(ax, x, width, height, color, radius_pt=2.5):
@@ -144,7 +183,7 @@ def rounded_bar(ax, x, width, height, color, radius_pt=2.5):
     ax.add_patch(PathPatch(MplPath(verts, codes), facecolor=color, linewidth=0))
 
 
-def plot(rows, subset, out_path):
+def plot(rows, subset, out_path, note=None):
     rows = [r for r in rows if r["subset"] == subset]
     models = list(dict.fromkeys(r["model"] for r in rows))
     tasks = [t for t in TASKS if any(r["task"] == t for r in rows)]
@@ -175,20 +214,25 @@ def plot(rows, subset, out_path):
         for i, task in enumerate(tasks):
             for j, model in enumerate(models):
                 r = value.get((model, task))
-                if r is None:
+                if r is None or r[metric] is None:  # no answers, or a subset with no question (N/A)
                     continue
                 x = i - group / 2 + j * width + gap / 2
                 rounded_bar(ax, x, width - gap, 100 * r[metric], colors[model])
         if metric == "yes_ratio":  # an unbiased model says yes as often as the labels do: 50% in the full set,
-            for i, task in enumerate(tasks):  # less in label_consistent / large_objects, so mark it per task
-                share = 100 * next(r["label_yes_ratio"] for r in rows if r["task"] == task)
-                ax.hlines(share, i - group / 2, i + group / 2, color=INK_2, linewidth=0.8)
-            ax.text(len(tasks) - 0.5, share + 1.5, "label yes share", color=INK_2, fontsize=7.5,
-                    ha="right", va="bottom")
+            share = None  # less in label_consistent / large_objects, so mark it per task
+            for i, task in enumerate(tasks):
+                shares = [r["label_yes_ratio"] for r in rows if r["task"] == task and r["label_yes_ratio"] is not None]
+                if shares:
+                    share = 100 * shares[0]
+                    ax.hlines(share, i - group / 2, i + group / 2, color=INK_2, linewidth=0.8)
+            if share is not None:
+                ax.text(len(tasks) - 0.5, share + 1.5, "label yes share", color=INK_2, fontsize=7.5,
+                        ha="right", va="bottom")
     handles = [Rectangle((0, 0), 1, 1, facecolor=colors[m], linewidth=0) for m in models]
     fig.legend(handles, [display_name(m) for m in models], loc="upper center", ncol=len(models), frameon=False,
                fontsize=8.5, labelcolor=INK_2, handlelength=0.9, handleheight=0.9, bbox_to_anchor=(0.5, 1.0))
-    fig.text(0.5, 0.005, f"MIHBench, {SUBSETS[subset]}", ha="center", va="bottom", color=INK_2, fontsize=7.5)
+    fig.text(0.5, 0.005, f"MIHBench, {note or SUBSETS[subset]}", ha="center", va="bottom", color=INK_2,
+             fontsize=7.5)
     fig.tight_layout(rect=(0, 0.03, 1, 0.9))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, facecolor=SURFACE)
@@ -214,10 +258,7 @@ def main():
     rows = summarize(data, args.method, flags)
 
     summary = method_dir / "summary.csv"
-    with open(summary, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0]))
-        w.writeheader()
-        w.writerows(rows)
+    write_summary(rows, summary)
     for subset, note in SUBSETS.items():
         if not any(r["subset"] == subset for r in rows):
             continue
@@ -225,11 +266,10 @@ def main():
         print(f"{'model':<24}{'task':<24}{'n':>5}{'acc':>8}{'prec':>8}{'rec':>8}{'f1':>8}{'yes':>8}")
         for r in rows:
             if r["subset"] == subset:
-                print(f"{r['model']:<24}{r['task']:<24}{r['n']:>5}" + "".join(
-                    f"{r[k]:>8.3f}" for k in ("accuracy", "precision", "recall", "f1", "yes_ratio")))
+                print(f"{r['model']:<24}{r['task']:<24}{r['n']:>5}" + "".join(fmt(r[k]) for k in METRIC_KEYS))
         if note:
             suffix = "" if subset == "all" else f"_{subset}"
-            plot(rows, subset, args.figures_dir / args.method / f"mihbench{suffix}.png")
+            plot(rows, subset, args.figures_dir / args.method / f"mihbench{suffix}.png", note)
     print(f"\nSummary: {summary}\nFigures: {args.figures_dir / args.method}")
 
 

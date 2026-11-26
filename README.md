@@ -22,6 +22,7 @@ gen/
 │   ├── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
 │   ├── cf_data.py                학습 공통 데이터: Group 로드·구조 검사, 프롬프트(configs/prompts.yaml), Qwen 배치·라벨
 │   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B; --method sft: 문항 단위 Shuffle, group-sft: Group 단위 배치; 방법마다 배치 구성과 loss만 다름), dev 지표 기록
+├── tests/                        단위 테스트 (python -m unittest discover -s tests)
 ├── data/                         데이터셋
 │   ├── coco/
 │   │   ├── annotations/
