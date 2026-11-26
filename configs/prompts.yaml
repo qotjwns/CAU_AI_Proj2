@@ -1,0 +1,10 @@
+# Text prompt per model family, used by MIHBench inference (src/infer_mihbench.py) and training (src/cf_data.py),
+# so evaluation and training always ask the same way. Edit the prompts here; nothing else needs to change.
+#   {question}  replaced by the question, e.g. "Is there a zebra in all 3 images?" (must appear exactly once)
+# Only the text is set here: each model's code puts the images and its chat template around it.
+# Defaults: each model's official MIHBench script with its yes/no instruction (pgtrece/DAB, --yes_or_no 1).
+# A result folder answered with another prompt is not resumed: move it away before re-running.
+
+qwen2.5-vl: "{question} Please answer with Yes or No."   # Qwen2.5-VL 3B, 7B
+internvl2.5: "{question} Please answer with yes or no."  # InternVL2.5 4B
+llava-ov: "{question} Please answer with yes or no."     # LLaVA-OneVision 7B
