@@ -18,21 +18,36 @@ gen/
 │   ├── compare_paper.py          existence 결과를 MIHBench 논문 Table 2 수치와 비교 (표·그래프)
 │   ├── analyze_no_bias.py        yes 문항에 No라고 답하는 이유 분석 (COCO 어노테이션과 응답의 설명 이용)
 │   ├── coco_pools.py             COCO 학습 데이터 1단계: 클래스별 P/N/어려운 N 가용 이미지 집계
-│   └── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
+│   ├── build_coco_existence.py   COCO 학습 데이터 2단계: 4-Case Counterfactual Group(A/B/C/D) 생성·검증 (--check: 재현성 확인)
+│   ├── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
+│   ├── cf_data.py                학습 공통 데이터: Group 로드·구조 검사, 프롬프트(configs/prompts.yaml), Qwen 배치·라벨
+│   └── train.py                  LoRA 학습 (Qwen2.5-VL 3B/7B, InternVL2.5-4B, LLaVA-OV-7B; --method sft; 방법끼리 데이터·배치는 같고 loss만 다름), dev 지표 기록
 ├── data/                         데이터셋
 │   ├── coco/
 │   │   ├── annotations/
 │   │   │   ├── instances_train2014.json
 │   │   │   └── instances_val2014.json   MIHBench 이미지(val2014)의 물체 크기 확인용
 │   │   └── train2014/            COCO_train2014_*.jpg 82,783장
-│   ├── coco_existence/           COCO 기반 학습 데이터 (src/coco_pools.py 등이 생성)
-│   │   └── pool_stats.json       클래스별 가용 이미지 수, 어려운 N 동반 클래스, 누수·물체 크기 점검
+│   ├── coco_existence/           COCO 기반 학습 데이터 (src/coco_pools.py, src/build_coco_existence.py가 생성)
+│   │   ├── train.jsonl, dev.jsonl, test.jsonl   문항 단위 (Group당 4문항), group_id·case·flip_partner·stay_partner로 Group 복원
+│   │   ├── pilot_train.jsonl     train에서 클래스당 6 Group (Flip·Stay 위치 조합마다 1개)
+│   │   ├── manifest.json         설정·seed·입출력 sha256·누수 점검 상태
+│   │   ├── statistics.json       split별 분포, 이미지 재사용, 검증 결과
+│   │   ├── excluded_images.json  제외 이미지와 이유
+│   │   ├── exclude/*.txt         (선택) 추가로 뺄 이미지 목록, 예: COVR 겹침
+│   │   ├── pool_stats.json       클래스별 가용 이미지 수, 어려운 N 동반 클래스, 누수·물체 크기 점검
+│   │   └── mihbench_label_audit.json  MIHBench 라벨 불일치 20문항 육안 판정
 │   └── mihbench/
 │       ├── questions/            태스크별 <task>.jsonl, 각 800문항
 │       └── images/
 │           ├── coco_val2014/     Existence, Count 이미지 1,908장
 │           └── co3d/             ID Consistency 이미지 1,619장 (<카테고리>/<시퀀스>/frame*.jpg)
 ├── models/                       모델 체크포인트, 폴더명은 HF 저장소 이름 (예: Qwen2.5-VL-3B-Instruct/)
+├── runs/                         학습 결과 (src/train.py)
+│   └── <method>/<model>[-<tag>]/ 예: sft/qwen2.5-vl-3b-pilot/
+│       ├── adapter/              LoRA 가중치 (epoch마다 저장)
+│       ├── args.json             학습 설정과 실행 환경
+│       └── log.jsonl             step별 train loss, 학습 전·epoch마다 dev 지표
 ├── results/                      평가 결과
 │   └── mihbench/
 │       └── vanilla/              학습하지 않은 원본 모델 (학습 모델은 <방법>/<model>/로 추가)
@@ -56,6 +71,7 @@ gen/
 | `data/coco/` | COCO train2014 이미지와 instance 어노테이션 | `scripts/download_coco_train2014.py` | 제외 |
 | `data/mihbench/` | MIHBench 5개 태스크 문항과 이미지 | `scripts/download_mihbench.py` | 제외 |
 | `models/` | VLM 체크포인트 (커밋 고정) | `scripts/download_models.py` | 제외 |
+| `runs/` | 방법·모델별 LoRA 가중치와 학습 기록 | `src/train.py` | 제외 |
 | `results/` | 방법·모델별 응답과 지표, 비교 표 | `src/infer_mihbench.py`, `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py` | 제외 |
 | `figures/` | 방법별 그래프 | `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py` | 제외 |
 
