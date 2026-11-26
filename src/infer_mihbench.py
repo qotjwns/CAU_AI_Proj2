@@ -90,12 +90,16 @@ def internvl_tiles(image, max_num=12, size=448):
 class InternVL:
     """InternVL2.5/internvl2.5_eval.py: each image (not resized) cut into up to 12 448px tiles plus a thumbnail,
     the tiles of all images given as one '<image>', ' Please answer with yes or no.' appended,
-    greedy, at most 1024 new tokens."""
+    greedy, at most 1024 new tokens. The official run uses eager attention, which builds a
+    tokens x tokens matrix per layer and runs out of memory on 24 GB GPUs; sdpa=True computes the same
+    attention without it."""
 
-    def __init__(self, path, load_4bit=False):
+    def __init__(self, path, load_4bit=False, sdpa=False):
         from transformers import AutoModel, AutoTokenizer
         self.model = AutoModel.from_pretrained(path, dtype=torch.bfloat16, use_flash_attn=False,
                                                trust_remote_code=True).eval().to(pick_device())
+        if sdpa:  # the remote code hard-wires eager into the language model's config
+            self.model.language_model.config._attn_implementation = "sdpa"
         self.tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, use_fast=False)
         self.transform = T.Compose([T.Resize((448, 448), interpolation=T.InterpolationMode.BICUBIC), T.ToTensor(),
                                     T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
@@ -158,7 +162,7 @@ def read_answers(path):
     return rows
 
 
-def run_info(name, model_dir, model, load_4bit):
+def run_info(name, model_dir, model, load_4bit, sdpa=False):
     """The environment that produced the answers: model files, precision, packages, hardware, date."""
     meta = model_dir / ".cache" / "huggingface" / "download" / "config.json.metadata"  # line 1: commit
     device = model.model.device
@@ -167,6 +171,7 @@ def run_info(name, model_dir, model, load_4bit):
         "model": name,
         "model_commit": meta.read_text().splitlines()[0] if meta.exists() else None,
         "load_4bit": load_4bit,
+        "attn": "sdpa" if sdpa else "official",
         "device": torch.cuda.get_device_name(device) if device.type == "cuda" else device.type,
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -200,20 +205,25 @@ def main():
     ap.add_argument("--task", nargs="+", default=["all"], choices=[*TASKS, "all"])
     ap.add_argument("--limit", type=int, help="only the first N questions of each task")
     ap.add_argument("--load-4bit", action="store_true", help="4-bit weights like the official Qwen run (CUDA only)")
+    ap.add_argument("--sdpa", action="store_true",
+                    help="InternVL only: sdpa attention instead of the official eager (needed on 24 GB GPUs)")
     args = ap.parse_args()
     tasks = list(TASKS) if "all" in args.task else list(dict.fromkeys(args.task))
     folder, wrapper = MODELS[args.model]
     if args.load_4bit and wrapper is not QwenVL:
         ap.error("--load-4bit is only for the Qwen models (the other official scripts run full precision)")
+    if args.sdpa and wrapper is not InternVL:
+        ap.error("--sdpa is only for InternVL (the other models already use sdpa)")
 
     model_dir = PROJECT / "models" / folder
     if not model_dir.is_dir():
         raise SystemExit(f"{model_dir} not found: python scripts/download_models.py --model {args.model}")
-    out_dir = PROJECT / "results" / "mihbench" / "vanilla" / (args.model + ("-4bit" if args.load_4bit else ""))
+    suffix = ("-4bit" if args.load_4bit else "") + ("-sdpa" if args.sdpa else "")
+    out_dir = PROJECT / "results" / "mihbench" / "vanilla" / (args.model + suffix)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = wrapper(model_dir, args.load_4bit)
-    info = run_info(args.model, model_dir, model, args.load_4bit)
+    model = InternVL(model_dir, sdpa=True) if args.sdpa else wrapper(model_dir, args.load_4bit)
+    info = run_info(args.model, model_dir, model, args.load_4bit, args.sdpa)
     print(f"{args.model} on {info['device']}")
     metrics_path = out_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
