@@ -17,6 +17,8 @@ gen/
 │   ├── eval_mihbench.py          저장된 응답을 다시 채점해 모델 비교 표(summary.csv)와 그래프 생성
 │   ├── compare_paper.py          existence 결과를 MIHBench 논문 Table 2 수치와 비교 (표·그래프)
 │   ├── analyze_no_bias.py        yes 문항에 No라고 답하는 이유 분석 (COCO 어노테이션과 응답의 설명 이용)
+│   ├── infer_per_image.py        MIHBench existence를 이미지 한 장씩 질문 (Is there a X in the image?, (이미지, 클래스) 쌍마다 한 번)
+│   ├── analyze_per_image.py      한 장씩 답의 AND와 세 장 동시 답 비교: 오류를 인식(한 장부터 틀림)과 합치기(한 장은 다 맞음)로 나눔
 │   ├── coco_pools.py             COCO 학습 데이터 1단계: 클래스별 P/N/어려운 N 가용 이미지 집계
 │   ├── build_coco_existence.py   COCO 학습 데이터 2단계: 4-Case Counterfactual Group(A/B/C/D) 생성·검증 (--check: 재현성 확인)
 │   ├── prompts.py                configs/prompts.yaml 읽기·검사, 템플릿에 질문 채우기
@@ -58,6 +60,7 @@ gen/
 │       └── projection_head.pt    cf-metric의 투영 헤드 (추론에는 쓰지 않음)
 ├── results/                      평가 결과
 │   └── mihbench/
+│       ├── per_image/<model>[-sdpa]/  한 장씩 답(answers.jsonl, src/infer_per_image.py)과 분석(analysis.json, src/analyze_per_image.py)
 │       ├── <method>/<run>/       학습 모델 (src/infer_mihbench.py --adapter runs/<method>/<run>), 예: sft/qwen2.5-vl-3b-pilot/. 채점·그래프: src/eval_mihbench.py --method <method>
 │       └── vanilla/              학습하지 않은 원본 모델
 │           ├── <model>/          예: qwen2.5-vl-3b-4bit/ (프롬프트는 configs/prompts.yaml, 기본은 질문 + 공식 yes/no 지시문. -4bit: 공식 Qwen 설정(4bit + eager), -sdpa: InternVL을 sdpa로 실행, -noyn: 지시문 없이 돌린 이전 결과, -official[-yn]: DAB 공식 스크립트로 돌린 Qwen 결과)
@@ -81,7 +84,7 @@ gen/
 | `data/mihbench/` | MIHBench 5개 태스크 문항과 이미지 | `scripts/download_mihbench.py` | 제외 |
 | `models/` | VLM 체크포인트 (커밋 고정) | `scripts/download_models.py` | 제외 |
 | `runs/` | 방법·모델별 LoRA 가중치와 학습 기록 | `src/train.py` | 제외 |
-| `results/` | 방법·모델별 응답과 지표, 비교 표 | `src/infer_mihbench.py`, `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py` | 제외 |
+| `results/` | 방법·모델별 응답과 지표, 비교 표 | `src/infer_mihbench.py`, `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py`, `src/infer_per_image.py`, `src/analyze_per_image.py` | 제외 |
 | `figures/` | 방법별 그래프 | `src/eval_mihbench.py`, `src/compare_paper.py`, `src/analyze_no_bias.py` | 제외 |
 
 ### MIHBench 태스크
