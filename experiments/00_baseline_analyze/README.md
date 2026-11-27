@@ -35,7 +35,8 @@ gen/
 │   ├── README.md         이 문서
 │   ├── config.yaml       태스크, 모델, A/B/C 프롬프트, 디코딩, 분석 설정
 │   ├── infer.py          --model <m> [--cond A B C] [--task ...] [--limit N] → raw/
-│   └── analyze.py        [--model ...] raw/ + GT → samples.jsonl, 결과표, 오류 교차 분석, bootstrap CI
+│   ├── analyze.py        [--model ...] raw/ + GT → samples.jsonl, 결과표, 오류 교차 분석, bootstrap CI
+│   └── plot.py           결과표 CSV → figures/00_baseline_analyze/*.png
 ├── results/00_baseline_analyze/            git 제외
 │   └── <model>/
 │       ├── raw/                    ① 추론 원본 (infer.py). 한 번 쓰면 고치지 않는다
@@ -47,7 +48,8 @@ gen/
 │       ├── table_subset.csv        ③ 결과표 1
 │       ├── table_metric.csv        ③ 결과표 2
 │       └── cross.json              ③ 문항별 오류 교차표, bootstrap CI
-└── figures/00_baseline_analyze/<model>/    git 제외
+└── figures/00_baseline_analyze/            git 제외: accuracy.png (결과표 1), differences.png (A−B·B−C와 95% CI),
+                                            error_rates.png (결과표 2의 False-Yes·False-No)
 ```
 
 - 결과·그림의 모델별 루트 경로는 `config.yaml`의 `output`에 있다. 폴더 이름은 실험 폴더 이름과 같게 둔다. 그 아래 구조(`raw/`, `samples.jsonl`, 표)는 `infer.py`와 `analyze.py`가 맞춰 쓰는 약속이라 고정한다.
@@ -62,7 +64,7 @@ python experiments/00_baseline_analyze/infer.py --model qwen2.5-vl-3b           
 ```
 
 - 호출 수: A 7,200 (1장), B 7,200 (3장), C 2,400 (3장). 끊겨도 같은 명령으로 이어서 돈다.
-- 분석은 Mac에서 `python experiments/00_baseline_analyze/analyze.py`로 돌린다 (모델 불필요). A·B·C가 모두 끝난 문항만 쓰므로 추론 중에도 돌릴 수 있다.
+- 분석은 Mac에서 `python experiments/00_baseline_analyze/analyze.py`로 돌린다 (모델 불필요). A·B·C가 모두 끝난 문항만 쓰므로 추론 중에도 돌릴 수 있다. 그림은 그다음 `plot.py`로 그린다.
 - `config.yaml`의 세 모델(Qwen 3B, Qwen 7B, LLaVA-OV) 모두 돌릴 수 있다. 새 모델은 `--cond A B C --limit 5`로 짧게 돌려 `first_token`이 Yes/No인지 먼저 본다.
 
 ### ① raw 한 줄 (모델 호출 1번)
