@@ -98,6 +98,42 @@ class Terms(unittest.TestCase):
         self.assertAlmostEqual(parts["uniform"], want, places=5)  # 6 batch pairs + 4 x 4 with the bank
         torch.testing.assert_close(obj.bank, torch.cat([u2, u1])[:6])  # newest first, capped at bank_size
 
+    def test_parts_and_loss_are_forward_in_two_steps(self):
+        torch.manual_seed(0)
+        logits, batch = make_batch([1, -1, 1, -1, 2, -2, 0.5, -3])
+        hidden = torch.randn(8, H)
+        for method, kw in (("sft", {}), ("cf-invariant", {"lambda_stay": 0.5}), ("cf-metric", {"alpha": 0.3})):
+            a, b = objective(method, **kw), objective(method, **kw)
+            b.load_state_dict(a.state_dict())
+            loss, values = a(logits, hidden, batch)
+            parts, stats = b.parts(logits, hidden, batch)
+            torch.testing.assert_close(b.loss(parts), loss)
+            self.assertEqual({k: v.item() for k, v in parts.items()}, values)
+            self.assertEqual(list(parts)[0], "ce")
+            self.assertEqual(set(stats), {"uniform_batch", "cos_batch"} if method == "cf-metric" else set())
+            torch.testing.assert_close(b.bank, a.bank)  # parts fills the bank as forward does
+
+    def test_collapse_check(self):
+        torch.manual_seed(0)
+        u = F.normalize(torch.randn(4, 3), dim=-1)
+        bank = F.normalize(torch.randn(5, 3), dim=-1)
+        stats = objectives.batch_feature_stats(u, bank)
+        pairs = [(i, j) for i in range(4) for j in range(i + 1, 4)]
+        self.assertAlmostEqual(stats["uniform_batch"], objectives.uniform_term(u).item(), places=6)
+        self.assertAlmostEqual(stats["cos_batch"], sum((u[i] @ u[j]).item() for i, j in pairs) / 6, places=6)
+        self.assertAlmostEqual(stats["cos_bank"], sum((a @ b).item() for a in u for b in bank) / 20, places=6)
+        self.assertNotIn("cos_bank", objectives.batch_feature_stats(u, bank[:0]))
+
+    def test_stale_bank_hides_a_bunched_batch(self):
+        """A batch of identical features against a bank elsewhere on the sphere: Uniform (mostly bank pairs) looks
+        spread out, the batch alone shows the collapse."""
+        same = F.normalize(torch.ones(8, 3), dim=-1)
+        bank = F.normalize(torch.tensor([[1.0, -1, 0], [-1, 0, 1], [0, 1, -1]]).repeat(20, 1), dim=-1)
+        stats = objectives.batch_feature_stats(same, bank)
+        self.assertLess(objectives.uniform_term(same, bank).item(), -2)
+        self.assertAlmostEqual(stats["uniform_batch"], 0.0, places=6)
+        self.assertAlmostEqual(stats["cos_batch"], 1.0, places=6)
+
     def test_dev_terms(self):
         m = torch.tensor([[3.0, -2.0, 1.0, -2.25]])
         self.assertAlmostEqual(objectives.flip_term(m, 2.0).item(), (0 + 0) / 2)

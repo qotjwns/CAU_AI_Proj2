@@ -7,7 +7,10 @@
                 start and after every step.
       evaluate  dev metrics (src/metrics.py) and the loss terms on dev, with the run's gamma and epsilon, for every
                 method (so an SFT run shows them too): ce, flip, stay; cf-metric adds align and uniform (over all
-                dev case pairs, no memory bank)
+                dev case pairs, no memory bank). And the geometry (src/metrics.py feature_geometry) of h, the last
+                hidden state at the answer position, for every method, and of u, the cf-metric features.
+      term_gradients  each loss term's gradient on the LoRA and on the projection head, and how it lines up with
+                CE's: does a term push the LoRA harder than CE, or against it?
     Neither loop knows the model: fit gets loss_of(batch), evaluate gets forward(batch) -> (logits, hidden)
     (models.<Family>.answer_outputs in src/train.py).
 """
@@ -16,7 +19,7 @@ import math
 import torch
 from tqdm import tqdm
 
-from metrics import margin_metrics
+from metrics import feature_geometry, margin_metrics
 from objectives import align_term, flip_term, margin, sft_loss, stay_term, uniform_term
 
 
@@ -73,21 +76,58 @@ def fit(params, opt, sched, loader, loss_of, epochs, steps, grad_accum, on_step=
     return step
 
 
+def term_gradients(parts, weights, groups):
+    """Each term's gradient as it enters the loss (weight x term, one batch, before any accumulation scale or
+    clipping), through torch.autograd.grad: .grad is left alone and the graph kept, so the step's own backward
+    runs as without this. One extra backward pass per term.
+      parts    {term: value tensor}, "ce" first (objectives.Objective.parts)
+      weights  {term: weight}; a term not listed has weight 1 (ce)
+      groups   {name: [parameters]}, e.g. lora and head; empty groups are left out
+    -> {"norm": {group: {term: gradient norm}}, "cos_ce": {term: cosine with the CE gradient on the first group}}
+    (cos_ce None when either gradient is 0)."""
+    groups = {g: ps for g, ps in groups.items() if ps}
+    params = [p for ps in groups.values() for p in ps]
+    first = len(next(iter(groups.values())))
+    dot = lambda xs, ys: sum((x.double() * y.double()).sum() for x, y in zip(xs, ys)).item()
+    out, ce = {"norm": {g: {} for g in groups}, "cos_ce": {}}, None
+    for term, value in parts.items():
+        grads = torch.autograd.grad(weights.get(term, 1.0) * value, params, retain_graph=True, allow_unused=True)
+        grads = [torch.zeros_like(p) if g is None else g for p, g in zip(params, grads)]
+        start = 0
+        for g, ps in groups.items():
+            out["norm"][g][term] = round(math.sqrt(dot(grads[start:start + len(ps)], grads[start:start + len(ps)])), 6)
+            start += len(ps)
+        lead = grads[:first]
+        if ce is None:
+            ce, ce_sq = lead, dot(lead, lead)
+            continue
+        norms = math.sqrt(dot(lead, lead) * ce_sq)
+        out["cos_ce"][term] = round(dot(lead, ce) / norms, 4) if norms > 0 else None
+    return out
+
+
 @torch.no_grad()
 def evaluate(loader, collate, objective, forward):
-    """Dev metrics and the loss terms on dev (module docstring); the memory bank is neither read nor filled.
-    The caller puts the model in eval mode first and back in training mode after."""
-    margins, losses, feats = [], [], []
+    """Dev metrics, the loss terms and the feature geometry on dev (module docstring); the memory bank is neither
+    read nor filled. The caller puts the model in eval mode first and back in training mode after."""
+    margins, losses, hs, feats = [], [], [], []
     for batch in tqdm(loader, desc="dev", leave=False):
         logits, hidden = forward(batch)
         margins.append(margin(logits, collate.yes_id, collate.no_id).cpu())
         losses.append(sft_loss(logits, batch).item())
+        if hidden is not None:
+            hs.append(hidden.float().cpu())
         if objective.head is not None:
             feats.append(objective.features(hidden).cpu())
     m = torch.cat(margins).view(-1, 4)  # groups x cases A, B, C, D
     terms = {"ce": sum(losses) / len(losses), "flip": flip_term(m, objective.gamma).item(),
              "stay": stay_term(m, objective.epsilon).item()}
+    geometry = {}
+    if hs:
+        geometry["h"] = feature_geometry(torch.cat(hs))
     if feats:
         u = torch.cat(feats)
         terms.update(align=align_term(u).item(), uniform=uniform_term(u).item())
-    return {**margin_metrics(m), "terms": {k: round(v, 4) for k, v in terms.items()}}
+        geometry["u"] = feature_geometry(u)
+    out = {**margin_metrics(m), "terms": {k: round(v, 4) for k, v in terms.items()}}
+    return {**out, "features": geometry} if geometry else out

@@ -160,15 +160,22 @@ class Tiny(torch.nn.Module):
 
 
 class TinyObjective(torch.nn.Module):
-    """Stands in for objectives.Objective: the mean square of the tiny model's output, no extra parameters."""
-    head = None
+    """Stands in for objectives.Objective: the mean square of the tiny model's output, scaled down so that
+    gradient clipping never hides a change in the gradient, no extra parameters."""
+    head, weights = None, {}
 
     def __init__(self, *args):
         super().__init__()
 
+    def parts(self, logits, hidden, batch):
+        return {"ce": 0.01 * logits.pow(2).mean()}, {}
+
+    def loss(self, parts):
+        return parts["ce"]
+
     def forward(self, logits, hidden, batch):
-        loss = logits.pow(2).mean()
-        return loss, {"ce": loss.item()}
+        parts, _ = self.parts(logits, hidden, batch)
+        return self.loss(parts), {k: v.item() for k, v in parts.items()}
 
 
 class TinyCollate:
@@ -184,7 +191,7 @@ class TinyFamily:
 
     @classmethod
     def for_training(cls, model_dir):
-        model = Tiny()
+        model = cls.last = Tiny()
         return model, model, None
 
     @staticmethod
@@ -205,12 +212,13 @@ class Main(unittest.TestCase):
     """main() end to end on the real pilot split, with a tiny model in place of the VLM: loaders, callbacks,
     logging and the step check run as in a real run (no VLM is loaded)."""
 
-    def run_main(self, method, batch_size, grad_accum, epochs, tmp):
+    def run_main(self, method, batch_size, grad_accum, epochs, tmp, extra=()):
+        torch.manual_seed(0)
         fake_peft = types.SimpleNamespace(LoraConfig=lambda **kw: None, get_peft_model=lambda m, c: m,
                                           __version__="fake")
         argv = ["train.py", "--model", "qwen2.5-vl-3b", "--method", method, "--train", "pilot_train",
                 "--batch-size", str(batch_size), "--grad-accum", str(grad_accum), "--epochs", str(epochs),
-                "--workers", "0", "--log-every", "1", "--tag", "test"]
+                "--workers", "0", "--log-every", "1", "--tag", "test", *extra]
         with mock.patch.multiple(train, PROJECT=Path(tmp), pick_device=lambda: "cpu",
                                  MODELS={"qwen2.5-vl-3b": ("Tiny", TinyFamily)},
                                  Collator=lambda inputs: TinyCollate(),
@@ -235,6 +243,32 @@ class Main(unittest.TestCase):
                 self.assertEqual(args["steps"], per_epoch * epochs, case)
                 self.assertEqual(steps, list(range(1, per_epoch * epochs + 1)), case)
                 self.assertEqual(dev, [(0, 0)] + [(e, e * per_epoch) for e in range(1, epochs + 1)], case)
+
+    def test_diagnostics_and_dev_every(self):
+        with tempfile.TemporaryDirectory() as tmp:  # 94 steps per epoch
+            _, log = self.run_main("sft", 4, 5, 2, tmp, ["--diag-every", "40", "--dev-every", "47"])
+        grads = [r for r in log if "grads" in r]
+        self.assertEqual([(r["epoch"], r["step"]) for r in grads], [(1, 1), (1, 40), (1, 80), (2, 120), (2, 160)])
+        self.assertGreater(grads[0]["grads"]["norm"]["lora"]["ce"], 0)
+        self.assertNotIn("head", grads[0]["grads"]["norm"])  # no projection head: the group is left out
+        dev = [(r["epoch"], r["step"]) for r in log if "dev" in r]
+        self.assertEqual(dev, [(0, 0), (1, 47), (1, 94), (2, 141), (2, 188)])  # 94, 188: epoch ends, once each
+        with tempfile.TemporaryDirectory() as tmp:
+            _, log = self.run_main("sft", 8, 1, 1, tmp, ["--diag-every", "0"])
+        self.assertFalse(any("grads" in r for r in log))
+
+    def test_diagnostics_leave_training_unchanged(self):
+        """The extra backward passes of term_gradients do not change a single parameter (diagnosing every other
+        step: a gradient changed on some steps only would change Adam's update)."""
+        weights = []
+        for diag_every in ("2", "0"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.run_main("group-sft", 8, 2, 1, tmp, ["--diag-every", diag_every, "--max-steps", "6"])
+            weights.append([p.detach().clone() for p in TinyFamily.last.parameters()])
+        for a, b in zip(*weights):
+            self.assertTrue(torch.equal(a, b))
+        torch.manual_seed(0)  # main() seeds with --seed 0 right before it builds the model
+        self.assertFalse(torch.equal(weights[0][0], Tiny().lin.weight))  # it did train
 
 
 if __name__ == "__main__":

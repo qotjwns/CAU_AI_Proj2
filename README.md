@@ -54,7 +54,7 @@ gen/
 │   └── <method>/<model>[-<tag>]/ 예: sft/qwen2.5-vl-3b-pilot/
 │       ├── adapter/              LoRA 가중치 (epoch마다 저장)
 │       ├── args.json             학습 설정과 실행 환경
-│       ├── log.jsonl             step별 train loss와 항별 값(ce, flip, stay, align, uniform), 학습 전·epoch마다 dev 지표
+│       ├── log.jsonl             step별 train loss와 항별 값(ce, flip, stay, align, uniform), 학습 전·epoch마다(--dev-every면 중간에도) dev 지표와 h·u 기하(cos_mean, erank), --diag-every마다 항별 gradient norm·CE와의 cosine, cf-metric 배치 붕괴 지표
 │       └── projection_head.pt    cf-metric의 투영 헤드 (추론에는 쓰지 않음)
 ├── results/                      평가 결과
 │   └── mihbench/

@@ -23,6 +23,11 @@
     of one group (InternVL, --batch-size 4) still spreads against ~64 other groups, and since every model uses the
     same bank, Uniform does not depend on the batch size (the other terms are per-case or per-group means already).
     Bank features come from a few steps back; bank_size 0 uses the batch alone.
+    Collapse check (cf-metric, every training batch, src/train.py logs it as "features"): uniform_batch (Uniform over
+    the batch pairs alone), cos_batch (mean cosine of the batch pairs), cos_bank (mean cosine of a batch feature with
+    a bank feature). Uniform mixes the two kinds of pairs and the bank pairs are most of them (8 x 256 against 28 at
+    batch size 8), so features that drift from step to step can look spread out against the stale bank while the
+    batch itself is bunched (uniform_batch near 0, cos_batch near 1).
 """
 import math
 
@@ -77,9 +82,20 @@ def uniform_term(u, bank=None):
     return torch.logsumexp(-2 * d2, 0) - math.log(len(d2))
 
 
+@torch.no_grad()
+def batch_feature_stats(u, bank):
+    """The collapse check of the module docstring: uniform_batch, cos_batch and, with a bank, cos_bank."""
+    i, j = torch.triu_indices(len(u), len(u), 1, device=u.device)
+    stats = {"uniform_batch": uniform_term(u).item(), "cos_batch": (u[i] * u[j]).sum(-1).mean().item()}
+    if len(bank):
+        stats["cos_bank"] = (u @ bank.T).mean().item()
+    return stats
+
+
 class Objective(torch.nn.Module):
     """CE plus the method's terms (module docstring). forward(logits, hidden, batch) -> (loss, {term: value});
-    its parameters (the projection head, cf-metric only) train with the LoRA. Every training forward pushes its
+    parts(...) and loss(parts) are the same in two steps, the terms kept as tensors (src/runner.py term_gradients).
+    Its parameters (the projection head, cf-metric only) train with the LoRA. Every training forward pushes its
     features into the memory bank (newest first, at most bank_size). hidden_size: the size of h (the language
     model's hidden size, models.<Family>.lm_head(net).in_features); args holds the weights and margins of src/train.py."""
 
@@ -100,8 +116,10 @@ class Objective(torch.nn.Module):
     def features(self, hidden):
         return F.normalize(self.head(hidden.float()), dim=-1)
 
-    def forward(self, logits, hidden, batch):
-        parts = {"ce": sft_loss(logits, batch)}
+    def parts(self, logits, hidden, batch):
+        """({term: value tensor}, unweighted, ce first; {collapse check: value}, cf-metric only). Pushes the
+        batch's features into the memory bank."""
+        parts, stats = {"ce": sft_loss(logits, batch)}, {}
         if self.terms:
             target = batch["target"].view(-1, 4)
             if not (target == target.new_tensor([1, 0, 1, 0])).all():
@@ -114,6 +132,13 @@ class Objective(torch.nn.Module):
             u = self.features(hidden)
             parts["align"] = align_term(u)
             parts["uniform"] = uniform_term(u, self.bank)
+            stats = batch_feature_stats(u, self.bank)
             self.bank = torch.cat([u.detach(), self.bank])[:self.bank_size]
-        loss = parts["ce"] + sum(self.weights[k] * parts[k] for k in self.terms)
-        return loss, {k: v.item() for k, v in parts.items()}
+        return parts, stats
+
+    def loss(self, parts):
+        return parts["ce"] + sum(self.weights[k] * parts[k] for k in self.terms)
+
+    def forward(self, logits, hidden, batch):
+        parts, _ = self.parts(logits, hidden, batch)
+        return self.loss(parts), {k: v.item() for k, v in parts.items()}

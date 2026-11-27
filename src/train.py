@@ -19,7 +19,9 @@
       runs/<method>/<model>[-<tag>]/adapter/    LoRA weights (peft), saved after every epoch
       runs/<method>/<model>[-<tag>]/args.json   settings and environment
       runs/<method>/<model>[-<tag>]/log.jsonl   train loss (and each term) every --log-every steps, dev metrics
-                                                (src/metrics.py) and dev terms before training and after every epoch
+                                                (src/metrics.py), dev terms and dev feature geometry before
+                                                training, every --dev-every steps and after every epoch; and
+                                                diagnostics (below)
       runs/cf-metric/<model>[-<tag>]/projection_head.pt   the projection head, saved with the adapter (not needed
                                                           for inference)
     MIHBench with the trained adapter (results/mihbench/<method>/<model>[-<tag>]/, then summary and figures):
@@ -34,9 +36,17 @@
     python src/train.py --model internvl2.5-4b --method sft --train pilot_train --batch-size 4 --grad-accum 2 --tag pilot
     python src/train.py --model qwen2.5-vl-3b --method sft --max-steps 2 --eval-groups 2 --tag smoke  # quick check
     Full training: --train train (the default) instead of --train pilot_train.
+    Diagnostics in log.jsonl, to tell a loss that trains from one that only looks like it does:
+      {"step", "epoch", "grads": {...}}   every --diag-every steps (and step 1), on the step's first batch: each
+                 term's gradient norm on the LoRA and on the projection head, and its cosine with CE's on the LoRA
+                 (src/runner.py term_gradients; one extra backward pass per term, so about 2-5% slower at 50)
+      "features" next to "terms" in the train records (cf-metric): uniform_batch, cos_batch, cos_bank averaged
+                 over the --log-every window (src/objectives.py batch_feature_stats)
+      "features" in the dev records: cos_mean and erank of h (every method) and of u (cf-metric)
 """
 import argparse
 import json
+import math
 import random
 from pathlib import Path
 
@@ -49,7 +59,7 @@ from cf_data import CaseDataset, Collator, GroupDataset
 from models import LORA_TARGETS, MODELS
 from objectives import METHODS, Objective
 from runinfo import environment, model_commit, pick_device
-from runner import evaluate, fit, items_per_batch, planned_steps
+from runner import evaluate, fit, items_per_batch, planned_steps, term_gradients
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -69,6 +79,11 @@ def main():
     ap.add_argument("--eval-groups", type=int, help="only this many dev groups (a fixed random sample)")
     ap.add_argument("--no-dev-before", action="store_true",
                     help="skip the dev evaluation before training (the same for every method of a model)")
+    ap.add_argument("--dev-every", type=int, default=0,
+                    help="also evaluate dev every this many optimizer steps (0: only before training and after "
+                         "each epoch)")
+    ap.add_argument("--diag-every", type=int, default=50,
+                    help="per-term gradient diagnostics every this many optimizer steps, and at step 1 (0: off)")
     ap.add_argument("--log-every", type=int, default=10)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
@@ -150,24 +165,49 @@ def main():
 
     family.train_mode(model)
     objective.train()
-    window, part_window = [], []
+    window, part_window, feature_window = [], [], []
+    per_epoch = math.ceil(len(train_loader) / args.grad_accum)  # optimizer steps per epoch (runner.planned_steps)
+    weights = {"ce": 1.0, **objective.weights}
+    groups = {"lora": [p for p in model.parameters() if p.requires_grad],
+              "head": [p for p in objective.parameters() if p.requires_grad]}
+    diag = {"done": 0, "for": None, "grads": None}  # steps done, the step diagnosed, its diagnostics until logged
     bar = tqdm(total=steps, desc=args.method)
 
+    def mean(rows):
+        keys = dict.fromkeys(k for r in rows for k in r)  # cos_bank is missing while the bank is empty
+        return {k: round(sum(r[k] for r in rows if k in r) / sum(k in r for r in rows), 5) for k in keys}
+
     def loss_of(batch):
-        loss, parts = objective(*forward(batch), batch)
-        part_window.append(parts)
-        return loss
+        parts, stats = objective.parts(*forward(batch), batch)
+        upcoming = diag["done"] + 1
+        if args.diag_every and diag["for"] != upcoming and (upcoming == 1 or upcoming % args.diag_every == 0):
+            diag["for"], diag["grads"] = upcoming, term_gradients(parts, weights, groups)
+        part_window.append({k: v.item() for k, v in parts.items()})
+        if stats:
+            feature_window.append(stats)
+        return objective.loss(parts)
 
     def on_step(step, epoch, loss, grad_norm):
+        diag["done"] = step
         window.append(loss)
         bar.update()
         bar.set_postfix(loss=f"{sum(window) / len(window):.4f}")
+        if diag["grads"] is not None:
+            write({"step": step, "epoch": epoch, "grads": diag["grads"]})
+            diag["grads"] = None
         if step % args.log_every == 0 or step == steps:
-            parts = {k: round(sum(p[k] for p in part_window) / len(part_window), 5) for k in part_window[0]}
-            write({"step": step, "epoch": epoch, "loss": round(sum(window) / len(window), 5), "terms": parts,
-                   "grad_norm": round(grad_norm, 4), "lr": sched.get_last_lr()[0]})
+            rec = {"step": step, "epoch": epoch, "loss": round(sum(window) / len(window), 5),
+                   "terms": mean(part_window)}
+            if feature_window:
+                rec["features"] = mean(feature_window)
+            write({**rec, "grad_norm": round(grad_norm, 4), "lr": sched.get_last_lr()[0]})
             window.clear()
             part_window.clear()
+            feature_window.clear()
+        if args.dev_every and step % args.dev_every == 0 and step % per_epoch and step != steps:  # not at an epoch end
+            dev_metrics = run_dev()
+            write({"step": step, "epoch": epoch, "dev": dev_metrics})
+            print(f"\ndev at step {step}: {dev_metrics}")
 
     def on_epoch(step, epoch):
         model.save_pretrained(run_dir / "adapter")
