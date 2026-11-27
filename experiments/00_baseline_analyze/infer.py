@@ -110,6 +110,8 @@ def main():
     model_cfg, decoding = cfg["models"][args.model], cfg["decoding"]
     if decoding["do_sample"] is not False:
         raise SystemExit("config.yaml decoding.do_sample: only greedy decoding (false) is supported")
+    if not all(isinstance(t, str) for t in decoding["logit_tokens"]):  # YAML reads bare Yes/No as booleans
+        raise SystemExit(f"config.yaml decoding.logit_tokens: {decoding['logit_tokens']}, quote them: \"Yes\"")
     model_dir = ROOT / model_cfg["path"]
     if not model_dir.is_dir():
         raise SystemExit(f"{model_dir} not found: python scripts/download_models.py --model {args.model}")

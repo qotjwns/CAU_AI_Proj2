@@ -45,7 +45,7 @@ models:
 
 decoding:
   do_sample: false
-  logit_tokens: [Yes, No, yes, no]
+  logit_tokens: ["Yes", "No", "yes", "no"]
 
 conditions:
 
