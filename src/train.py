@@ -67,6 +67,8 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--warmup", type=float, default=0.03, help="share of the steps")
     ap.add_argument("--eval-groups", type=int, help="only this many dev groups (a fixed random sample)")
+    ap.add_argument("--no-dev-before", action="store_true",
+                    help="skip the dev evaluation before training (the same for every method of a model)")
     ap.add_argument("--log-every", type=int, default=10)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
@@ -141,9 +143,10 @@ def main():
         log.write(json.dumps(rec) + "\n")
         log.flush()
 
-    dev_metrics = run_dev()
-    write({"step": 0, "epoch": 0, "dev": dev_metrics})
-    print(f"dev before training: {dev_metrics}")
+    if not args.no_dev_before:
+        dev_metrics = run_dev()
+        write({"step": 0, "epoch": 0, "dev": dev_metrics})
+        print(f"dev before training: {dev_metrics}")
 
     family.train_mode(model)
     objective.train()
