@@ -1,0 +1,75 @@
+tasks:
+  - existence_random
+  - existence_popular
+  - existence_adversarial
+
+data:
+  questions: data/mihbench/questions/{task}.jsonl            # 태스크당 800문항, 모두 3장
+  images: data/mihbench/images/coco_val2014
+  coco_annotations: data/coco/annotations/instances_val2014.json  # 이미지별 GT (오류 교차 분석용)
+
+output:
+  results: results/00_baseline_analyze/{model}
+  figures: figures/00_baseline_analyze/{model}
+
+models:
+  qwen2.5-vl-3b:
+    path: models/Qwen2.5-VL-3B-Instruct
+    family: qwen2.5-vl
+    dtype: bfloat16
+    attn: sdpa
+    image_size: 672
+    max_new_tokens: 128
+  qwen2.5-vl-7b:
+    path: models/Qwen2.5-VL-7B-Instruct
+    family: qwen2.5-vl
+    dtype: bfloat16
+    attn: sdpa
+    image_size: 672
+    max_new_tokens: 128
+  internvl2.5-4b:
+    path: models/InternVL2_5-4B
+    family: internvl2.5
+    dtype: bfloat16
+    attn: sdpa
+    max_tiles: 12
+    max_new_tokens: 1024
+  llava-ov-7b:
+    path: models/llava-onevision-qwen2-7b-ov-hf
+    family: llava-ov
+    dtype: float16
+    attn: sdpa
+    image_size: 672
+    anyres: false
+    max_new_tokens: 1024
+
+decoding:
+  do_sample: false
+  logit_tokens: [Yes, No, yes, no]
+
+conditions:
+
+  A:  #독립 이미지 판단
+    name: Independent Recognition
+    images: single     
+    prompt: "Is there a {obj} in this image?\nAnswer Yes or No."
+    final: and         
+  B:  #3장 동시 입력 각각 위치 판단
+    name: Contextual Recognition
+    images: all        # 3장을 C와 같은 배치로 입력, 이미지마다 따로 질문 (문항당 3회 추론)
+    prompt: "Is there a {obj} in the {ordinal} image?\nAnswer Yes or No."
+    ordinals: [first, second, third]
+    final: and
+  C: 
+    name: Original MIHBench
+    images: all
+    prompt: official   # MIHBench 질문 원문 + configs/prompts.yaml의 family 지시문, 수정 없음
+    final: model       # 모델의 Yes/No 그대로
+
+analysis:
+  label: mihbench      # 결과표 1·2의 정답: MIHBench 문항 label
+  per_image_gt: mihbench   # label yes → [1,1,1], label no → COCO로 없는 이미지 표시 (COCO가 3장 다 있다고 하면 null)
+  bootstrap:
+    n: 10000
+    ci: 0.95
+    seed: 0            # 문항 단위 paired 재표집
