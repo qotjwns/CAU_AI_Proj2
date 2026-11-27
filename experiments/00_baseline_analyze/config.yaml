@@ -27,13 +27,6 @@ models:
     attn: sdpa
     image_size: 672
     max_new_tokens: 128
-  internvl2.5-4b:
-    path: models/InternVL2_5-4B
-    family: internvl2.5
-    dtype: bfloat16
-    attn: sdpa
-    max_tiles: 12
-    max_new_tokens: 1024
   llava-ov-7b:
     path: models/llava-onevision-qwen2-7b-ov-hf
     family: llava-ov

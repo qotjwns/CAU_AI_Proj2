@@ -24,7 +24,7 @@ Hidden state, probe, fine-tuning, loss 설계는 이 실험이 끝날 때까지 
 ## 모델별 주의
 
 - **LLaVA-OV**: 이미지를 1장만 넣으면 프로세서가 자동으로 고해상도 anyres 타일(~3,700 토큰)로 자른다. 3장을 넣는 B·C는 이미지당 기본 해상도(730 토큰)이므로, A에서도 기본 해상도로 고정해야 이미지당 토큰 수가 같아진다 (`config.yaml`의 `anyres: false`). 구현은 1장을 다중 이미지 샘플의 한 장처럼 넣는다: 픽셀은 같은 이미지 두 장짜리 샘플의 첫 장, 이미지 토큰은 730개, 모델에는 `batch_num_images=2`를 줘서 anyres 타일을 기대하지 않게 한다 (`common/models.py`의 `LlavaOVInputs`).
-- **InternVL**: 공식 형식은 3장의 타일을 `<image>` 하나로 이어 붙이고 이미지 사이 경계 표시가 없다. 그래서 B에서 "first/second/third image"라고 물어도 모델이 어느 이미지인지 구분하지 못할 수 있다. 이 모델의 B 결과(A−B, B−C 포함)는 이 점을 감안해서 해석한다.
+- **InternVL2.5-4B는 이 실험에서 뺐다.** 3장 입력이 최대 약 10k 토큰이라 RTX 3090에서 B 조건만 약 3시간이 걸릴 것으로 보여 중간에 멈췄다. 추론 코드는 `common/models.py`에 남아 있으니 `config.yaml`의 `models`에 다시 넣으면 돌릴 수 있다. 넣는다면 공식 형식이 3장의 타일을 `<image>` 하나로 이어 붙여 이미지 경계 표시가 없으므로, B의 "first/second/third image"를 모델이 구분하지 못할 수 있음을 감안해서 해석한다.
 
 ## 파일
 
@@ -63,7 +63,7 @@ python experiments/00_baseline_analyze/infer.py --model qwen2.5-vl-3b           
 
 - 호출 수: A 7,200 (1장), B 7,200 (3장), C 2,400 (3장). 끊겨도 같은 명령으로 이어서 돈다.
 - 분석은 Mac에서 `python experiments/00_baseline_analyze/analyze.py`로 돌린다 (모델 불필요). A·B·C가 모두 끝난 문항만 쓰므로 추론 중에도 돌릴 수 있다.
-- `config.yaml`의 네 모델 모두 돌릴 수 있다. 새 모델은 `--cond A B C --limit 5`로 짧게 돌려 `first_token`이 Yes/No인지 먼저 본다.
+- `config.yaml`의 세 모델(Qwen 3B, Qwen 7B, LLaVA-OV) 모두 돌릴 수 있다. 새 모델은 `--cond A B C --limit 5`로 짧게 돌려 `first_token`이 Yes/No인지 먼저 본다.
 
 ### ① raw 한 줄 (모델 호출 1번)
 
@@ -208,5 +208,5 @@ python experiments/00_baseline_analyze/infer.py --model qwen2.5-vl-3b           
   - label이 yes인데 COCO로는 물체가 없는 이미지가 섞인 475문항: `image_gt`를 `[1, 1, 1]`로 둔다.
   - label이 no인데 COCO로는 3장 모두 물체가 있는 19문항: 어느 이미지가 0인지 알 수 없어 `image_gt`를 `null`로 두고 이미지 단위 분석에서만 뺀다. 문항 단위 지표에는 포함한다.
   - A·B는 장마다 판단하므로 이 문항들에서 실제로는 맞게 봤어도 오답으로 잡힐 수 있다. `samples.jsonl`의 `label_consistent`로 표시해 두고 해석할 때 참고한다.
-- **모델별 설정** (`config.yaml`의 `models`): 이미지 전처리와 `max_new_tokens`는 모델별 MIHBench 공식 스크립트(pgtrece/DAB)를 따르고, A·B·C는 모델마다 같은 설정을 쓴다. Qwen은 672×672 리사이즈(이미지당 576 토큰), InternVL은 리사이즈 없이 448px 타일 최대 12개 + 썸네일, LLaVA-OV는 672×672 기본 해상도(730 토큰)다. 정밀도는 Qwen 공식(4bit + eager) 대신 bf16 + sdpa로, InternVL은 공식 eager가 24GB GPU에서 메모리가 부족해 sdpa로 돌린다. 로컬에는 qwen2.5-vl-3b만 있고 나머지는 `scripts/download_models.py`로 받는다.
+- **모델별 설정** (`config.yaml`의 `models`): 이미지 전처리와 `max_new_tokens`는 모델별 MIHBench 공식 스크립트(pgtrece/DAB)를 따르고, A·B·C는 모델마다 같은 설정을 쓴다. Qwen은 672×672 리사이즈(이미지당 576 토큰), LLaVA-OV는 672×672 기본 해상도(730 토큰)다. 정밀도는 Qwen 공식(4bit + eager) 대신 bf16 + sdpa로 돌린다. 로컬에는 qwen2.5-vl-3b만 있고 나머지는 `scripts/download_models.py`로 받는다.
 - **기존 C 결과**: `results/mihbench/vanilla/qwen2.5-vl-3b-official-yn/`은 DAB 공식 스크립트로 돌린 결과다. 응답 텍스트만 있고 logit이 없어서 C는 이 실험의 파이프라인으로 다시 돌린다. 기존 Accuracy(random 0.840, popular 0.826, adversarial 0.640)는 재현 확인용으로 쓴다.
