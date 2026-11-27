@@ -14,6 +14,8 @@
       --vanilla          also answer with the untrained model (results/mihbench/vanilla/<model>/, same prompt and
                          precision) and score method vanilla: the baseline (inference resumes, so done once)
       --skip-train       the run folder exists already: only MIHBench
+    InternVL answers MIHBench with sdpa attention (infer_mihbench.py --sdpa, folder suffix -sdpa), as it trains: the
+    official eager attention builds a tokens x tokens matrix and takes ~4 s per question at ~10k tokens.
     python src/experiment.py --model qwen2.5-vl-3b --method cf-invariant --train pilot_train --tag pilot --vanilla
     python src/experiment.py --model qwen2.5-vl-3b --method sft --max-steps 2 --eval-groups 2 --tag smoke \\
         --mihbench-tasks existence_random --mihbench-limit 5                       # quick check of the chain
@@ -54,12 +56,14 @@ def main():
         run("train.py", "--model", args.model, "--method", args.method, *(["--tag", args.tag] if args.tag else []),
             *train_args)
     mihbench = ["--task", *args.mihbench_tasks] + (["--limit", args.mihbench_limit] if args.mihbench_limit else [])
+    if args.model.startswith("internvl"):
+        mihbench.append("--sdpa")
     run("infer_mihbench.py", "--adapter", run_dir, *mihbench)
     run("eval_mihbench.py", "--method", args.method)
     if args.vanilla:
         run("infer_mihbench.py", "--model", args.model, *mihbench)
         run("eval_mihbench.py", "--method", "vanilla")
-    print(f"\ndone: {run_dir}/, results/mihbench/{args.method}/{run_dir.name}/, "
+    print(f"\ndone: {run_dir}/, results/mihbench/{args.method}/{run_dir.name}{'-sdpa' if '--sdpa' in mihbench else ''}/, "
           f"results/mihbench/{args.method}/summary.csv")
 
 

@@ -52,6 +52,12 @@ class Chain(unittest.TestCase):
         self.assertEqual(calls[3][1], ["--model", "qwen2.5-vl-3b", "--task", "existence_random", "--limit", "5"])
         self.assertEqual(calls[4][1], ["--method", "vanilla"])
 
+    def test_internvl_answers_with_sdpa(self):
+        calls = steps(["--model", "internvl2.5-4b", "--method", "sft", "--batch-size", "4", "--grad-accum", "2"])
+        self.assertEqual(calls[0][1][-4:], ["--batch-size", "4", "--grad-accum", "2"])  # training unchanged
+        self.assertEqual(calls[1][1][-1], "--sdpa")
+        self.assertNotIn("--sdpa", steps(["--model", "qwen2.5-vl-3b", "--method", "sft"])[1][1])
+
     def test_stops_at_failure(self):
         calls = steps(["--model", "qwen2.5-vl-3b", "--method", "sft"], fail_at="train.py")
         self.assertEqual([c[0] for c in calls], ["train.py", "exit"])
